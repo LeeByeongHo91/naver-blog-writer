@@ -11,6 +11,7 @@ const ASSET = "blog-writer.zip"; // 릴리스에 붙이는 파일 (4_다른 사�
 // 시험용: BLOGWRITER_UPDATE_API 로 GitHub 대신 다른 주소에서 최신 버전 정보를 읽는다
 const RELEASE_API = process.env.BLOGWRITER_UPDATE_API ?? `https://api.github.com/repos/${REPO}/releases/latest`;
 const PROGRAM_DIR = path.join(import.meta.dirname, "..");
+const OBSOLETE = ["블로그글생성기.html"]; // 업데이트할 때 지울 예전 파일 (프로그램 폴더 기준)
 export const VERSION = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, "package.json"), "utf8")).version;
 const run = promisify(execFile);
 
@@ -91,6 +92,8 @@ export async function applyUpdate(log) {
     fs.writeFileSync(dest, data);
     changed++;
   }
+  // 예전 버전에만 있던 파일은 지운다
+  for (const name of OBSOLETE) fs.rmSync(path.join(PROGRAM_DIR, name), { force: true });
   if (dependencies() !== before) {
     log("필요한 구성 요소를 새로 까는 중... (1~2분 걸릴 수 있습니다)");
     await run("cmd.exe", ["/c", "npm", "install", "--no-fund", "--no-audit"], { cwd: path.join(PROGRAM_DIR, "app"), timeout: 600000 });

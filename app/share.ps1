@@ -10,7 +10,7 @@ try {
     New-Item -ItemType Directory -Force (Join-Path $dest "app") | Out-Null
 
     # 프로그램 폴더 바로 아래에서는 이 목록에 있는 파일만 담는다 (Claude_API_키.txt, *말투 폴더, 글끝_예시.txt 등은 빠진다)
-    $topFiles = @("0_사용방법.html", "1_설치.bat", "2_설정.bat", "3_블로그 글 올리기.bat", "4_다른 사람에게 줄 파일 만들기.bat", "블로그글생성기.html")
+    $topFiles = @("0_사용방법.html", "1_설치.bat", "2_설정.bat", "3_블로그 글 올리기.bat", "4_다른 사람에게 줄 파일 만들기.bat")
     foreach ($name in $topFiles) {
         $src = Join-Path $root $name
         if (Test-Path -LiteralPath $src) { Copy-Item -LiteralPath $src -Destination $dest }
