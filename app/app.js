@@ -93,9 +93,13 @@ function photoList(sub) {
 // 사진 폴더 밖의 파일은 보여 주지 않는다
 function inPhotoFolder(file) {
   const root = loadConfig().photoFolder;
-  if (!file || !root) return false;
-  const resolved = path.resolve(file);
-  return resolved.startsWith(path.resolve(root) + path.sep) && fs.existsSync(resolved);
+  return Boolean(file && root) && isInside(root, file) && fs.existsSync(file);
+}
+
+// file이 folder 안에 있는지. 폴더가 드라이브 맨 위(D:\)여도, 대소문자가 달라도 맞게 판단한다
+function isInside(folder, file) {
+  const rel = path.relative(path.resolve(folder), path.resolve(file));
+  return Boolean(rel) && !rel.startsWith("..") && !path.isAbsolute(rel);
 }
 
 // 작은 미리보기 사진. 구글 드라이브 사진은 열 때마다 내려받으므로 한 번 만든 것은 저장해 두고 다시 쓴다.
@@ -104,7 +108,8 @@ async function thumbnail(file) {
   const out = path.join(THUMB_DIR, `${key}.jpg`);
   if (!fs.existsSync(out)) {
     fs.mkdirSync(THUMB_DIR, { recursive: true });
-    await sharp(await readable(file)).rotate().resize(360, 360, { fit: "cover" }).jpeg({ quality: 75 }).toFile(out);
+    // failOn: "none" — 일부 휴대폰 사진은 파일 안에 군더더기 바이트가 섞여 있다. 사진 앱은 무시하고 보여 주므로 여기서도 무시한다
+    await sharp(await readable(file), { failOn: "none" }).rotate().resize(360, 360, { fit: "cover" }).jpeg({ quality: 75 }).toFile(out);
   }
   return out;
 }
@@ -355,7 +360,7 @@ async function upload(req, name, sub) {
   const config = loadConfig();
   const root = config.photoFolder;
   if (!root || !fs.existsSync(root)) return { ok: false, message: "사진 폴더를 찾을 수 없습니다. 설정에서 사진 폴더를 먼저 골라 주세요." };
-  const folder = config.mode === "subfolder" && sub && path.resolve(sub).startsWith(path.resolve(root) + path.sep) && fs.existsSync(sub) ? sub : root;
+  const folder = config.mode === "subfolder" && sub && isInside(root, sub) && fs.existsSync(sub) ? sub : root;
   const base = path.basename(String(name ?? "")).replace(/[<>:"/\\|?*\x00-\x1f]/g, "_");
   const ext = path.extname(base).toLowerCase();
   if (!base || !(IMAGE_EXTS.has(ext) || VIDEO_EXTS.has(ext))) return { ok: false, message: `${base || "파일"}: 사진이나 동영상 파일만 넣을 수 있습니다.` };
@@ -492,6 +497,13 @@ const server = http.createServer(async (req, res) => {
       const thumb = await thumbnail(file);
       res.writeHead(200, { "Content-Type": "image/jpeg", "Cache-Control": "max-age=86400" });
       fs.createReadStream(thumb).pipe(res);
+    } else if (req.method === "GET" && url.pathname === "/api/image") {
+      // 작은 미리보기를 못 만들 때 화면이 대신 원본 사진을 보여 준다 (브라우저가 읽을 수 있는 형식만)
+      const file = url.searchParams.get("path");
+      const type = { ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp" }[path.extname(file ?? "").toLowerCase()];
+      if (!type || !inPhotoFolder(file)) return notFound();
+      res.writeHead(200, { "Content-Type": type });
+      fs.createReadStream(file).pipe(res);
     } else if (req.method === "GET" && url.pathname === "/api/video") {
       const file = url.searchParams.get("path");
       if (!inPhotoFolder(file) || !isVideo(file)) return notFound();

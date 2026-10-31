@@ -213,7 +213,8 @@ export async function generatePost(config, photos, topic, memo, emphasis = "", {
     if (isVideo(file) && !frames.has(file)) {
       content.push({ type: "text", text: `${i + 1}번 (동영상 "${path.basename(file)}". 내용은 보여 드릴 수 없습니다)` });
     } else {
-      const jpeg = await sharp(isVideo(file) ? frames.get(file) : file)
+      // failOn: "none" — 휴대폰 사진에 흔한 작은 손상(군더더기 바이트)은 무시하고 읽는다
+      const jpeg = await sharp(isVideo(file) ? frames.get(file) : file, { failOn: "none" })
         .rotate()
         .resize(MAX_EDGE, MAX_EDGE, { fit: "inside", withoutEnlargement: true })
         .jpeg({ quality: 85 })
