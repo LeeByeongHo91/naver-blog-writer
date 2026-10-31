@@ -1,0 +1,19 @@
+# 올려도 되는 파일만 적는다. 여기 없는 파일(API 키, 말투 예시, 개인 예시 파일, node_modules 등)은 절대 올라가지 않는다.
+*
+!.gitignore
+!.gitattributes
+!README.md
+!0_사용방법.html
+!1_설치.bat
+!2_설정.bat
+!3_블로그 글 올리기.bat
+!4_다른 사람에게 줄 파일 만들기.bat
+!블로그글생성기.html
+!app/
+app/*
+!app/*.js
+!app/*.html
+!app/*.ps1
+!app/icon.ico
+!app/package.json
+!app/package-lock.json
