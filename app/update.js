@@ -8,6 +8,8 @@ import { DATA_DIR } from "./config.js";
 
 export const REPO = "LeeByeongHo91/naver-blog-writer";
 const ASSET = "blog-writer.zip"; // 릴리스에 붙이는 파일 (4_다른 사람에게 줄 파일 만들기로 만든 zip과 같은 내용)
+// 시험용: BLOGWRITER_UPDATE_API 로 GitHub 대신 다른 주소에서 최신 버전 정보를 읽는다
+const RELEASE_API = process.env.BLOGWRITER_UPDATE_API ?? `https://api.github.com/repos/${REPO}/releases/latest`;
 const PROGRAM_DIR = path.join(import.meta.dirname, "..");
 export const VERSION = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, "package.json"), "utf8")).version;
 const run = promisify(execFile);
@@ -26,7 +28,7 @@ export const updateInfo = () => latest;
 // GitHub의 최신 릴리스를 확인한다. 인터넷이 안 되거나 GitHub이 대답하지 않으면 '새 버전 없음'으로 둔다
 export async function checkUpdate() {
   try {
-    const res = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
+    const res = await fetch(RELEASE_API, {
       headers: { Accept: "application/vnd.github+json", "User-Agent": "blog-writer" },
       signal: AbortSignal.timeout(8000),
     });
