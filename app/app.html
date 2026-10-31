@@ -155,6 +155,15 @@
   .drop-card { position: relative; }
   .drop-card.dragover::after { content: "여기에 놓으면 사진 폴더에 복사됩니다"; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(3,199,90,.12); border: 3px dashed var(--green); border-radius: 12px; font-weight: bold; font-size: 18px; color: #05683a; z-index: 5; }
 
+  /* 글 맨 위 이미지 */
+  .header-images { display: flex; gap: 12px; flex-wrap: wrap; margin: 6px 0 12px; }
+  .header-images .item { width: 150px; border: 1px solid var(--line); border-radius: 10px; padding: 8px; background: var(--bg); }
+  .header-images img { width: 100%; height: 110px; object-fit: contain; background: #fff; border-radius: 6px; display: block; }
+  .header-images .name { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: 4px 0; }
+  .header-images .tools { display: flex; gap: 4px; }
+  .header-images .tools button { flex: 1; padding: 4px 0; font-size: 13px; }
+  .header-images .empty { color: var(--muted); font-size: 14px; padding: 6px 0; }
+
   /* 지난 글 */
   .post-list { list-style: none; margin: 0; padding: 0; }
   .post-list li { display: flex; gap: 12px; padding: 11px 6px; border-top: 1px solid var(--line); cursor: pointer; }
@@ -525,9 +534,17 @@
   <div id="wizardNotice" class="notice error wizard-only" hidden></div>
 
   <details id="advanced" class="advanced no-wizard">
-    <summary>⚙ 고급 설정 <small>(글 끝에 붙일 내용, 네이버 템플릿, 항상 지킬 요청)</small></summary>
+    <summary>⚙ 고급 설정 <small>(글 맨 위 이미지, 글 끝에 붙일 내용, 네이버 템플릿, 항상 지킬 요청)</small></summary>
   <div class="card">
-    <h2>6. 글 끝에 항상 붙일 내용</h2>
+    <h2>6. 글 맨 위에 항상 넣을 이미지</h2>
+    <p class="hint">가게·도장 로고, 인사 배너처럼 <b>모든 글의 맨 위(제목 바로 아래)</b>에 똑같이 넣을 이미지입니다. 여러 장이면 이 순서대로 들어갑니다. 넣거나 빼면 바로 저장됩니다.</p>
+    <div id="headerImages" class="header-images"></div>
+    <button id="addHeaderImage" class="small">+ 이미지 추가</button>
+    <input type="file" id="headerFile" accept="image/*,.heic,.heif" multiple hidden>
+    <p class="hint" style="margin-top:12px">⚠ 네이버는 글의 <b>첫 사진을 대표 이미지</b>(검색 결과에 보이는 썸네일)로 씁니다. 여기에 이미지를 넣으면 모든 글의 대표 이미지가 이 이미지가 됩니다. 글마다 다르게 하고 싶으면 네이버 글쓰기 화면에서 다른 사진에 마우스를 올리고 <b>'대표'</b>를 눌러 바꿔 주세요.</p>
+  </div>
+  <div class="card">
+    <h2>7. 글 끝에 항상 붙일 내용</h2>
     <p class="hint">가게·도장 소개, 네이버 지도, 톡톡, 유튜브, 인스타그램처럼 매번 글 끝(마무리 글과 해시태그 사이)에 똑같이 들어가는 부분입니다. 비워 두면 아무것도 붙이지 않습니다.</p>
     <div class="map-helper">
       <b>🧩 네이버 '내 템플릿' 쓰기</b>
@@ -572,7 +589,7 @@ https://www.youtube.com/@..."></textarea>
   </div>
 
   <div class="card">
-    <h2>7. 항상 지킬 요청</h2>
+    <h2>8. 항상 지킬 요청</h2>
     <p class="hint">글을 쓸 때마다 AI가 꼭 지키는 규칙입니다. 내 글 예시보다 이 규칙이 우선합니다.</p>
 
     <label>단어 바꾸기 <small>(왼쪽 말을 쓰지 않고 오른쪽 말로 씁니다. AI가 놓쳐도 프로그램이 마지막에 한 번 더 바꿉니다)</small></label>
@@ -1111,6 +1128,46 @@ pickCard.addEventListener("drop", (e) => {
   e.preventDefault();
   pickCard.classList.remove("dragover");
   uploadFiles(e.dataTransfer.files);
+});
+
+// ---------- 글 맨 위에 항상 넣을 이미지 ----------
+function renderHeaderImages(list) {
+  config.headerImages = list;
+  const box = $("headerImages");
+  box.textContent = "";
+  if (!list.length) box.append(Object.assign(document.createElement("div"), { className: "empty", textContent: "넣은 이미지가 없습니다. 비워 두면 글 맨 위에는 아무것도 넣지 않습니다." }));
+  list.forEach((name, i) => {
+    const item = document.createElement("div");
+    item.className = "item";
+    item.append(
+      Object.assign(document.createElement("img"), { src: "/api/header-thumb?name=" + encodeURIComponent(name) + "&v=" + Date.now(), alt: name }),
+      Object.assign(document.createElement("div"), { className: "name", textContent: `${i + 1}. ${name}`, title: name }),
+    );
+    const tools = document.createElement("div");
+    tools.className = "tools";
+    const tool = (label, title, action, disabled) => {
+      const b = Object.assign(document.createElement("button"), { textContent: label, title, disabled });
+      b.addEventListener("click", async () => {
+        if (action === "remove" && !confirm(`'${name}' 이미지를 뺄까요?`)) return;
+        const r = await api("/api/header-image/change", { action, name });
+        if (r.ok) renderHeaderImages(r.images);
+        else alert(r.message);
+      });
+      return b;
+    };
+    tools.append(tool("◀", "앞으로", "up", i === 0), tool("▶", "뒤로", "down", i === list.length - 1), tool("✕", "빼기", "remove", false));
+    item.append(tools);
+    box.append(item);
+  });
+}
+$("addHeaderImage").addEventListener("click", () => $("headerFile").click());
+$("headerFile").addEventListener("change", async () => {
+  for (const file of $("headerFile").files) {
+    const r = await fetch("/api/header-image?name=" + encodeURIComponent(file.name), { method: "POST", body: file }).then((x) => x.json()).catch(() => ({ ok: false, message: "넣지 못했습니다." }));
+    if (r.ok) renderHeaderImages(r.images);
+    else alert(`${file.name}: ${r.message}`);
+  }
+  $("headerFile").value = "";
 });
 
 // ---------- 사용료 ----------
@@ -1721,7 +1778,8 @@ $("updateNow").addEventListener("click", async () => {
   fillSettings(data.driveGuess);
   $("reviewFirst").checked = config.reviewFirst !== false;
   // 고급 설정은 이미 뭔가 적어 둔 사람에게만 펼쳐 둔다
-  $("advanced").open = Boolean(config.footer?.trim() || config.naverTemplate?.trim() || config.replaceWords?.length || config.repeatPhrases?.length || config.aiRequests?.trim());
+  renderHeaderImages(config.headerImages ?? []);
+  $("advanced").open = Boolean(config.headerImages?.length || config.footer?.trim() || config.naverTemplate?.trim() || config.replaceWords?.length || config.repeatPhrases?.length || config.aiRequests?.trim());
   const ready = config.apiKey && config.blogId && config.photoFolder;
   $("setupNotice").hidden = ready;
   if (!ready) startWizard(!config.apiKey ? 1 : !config.blogId ? 2 : 3);

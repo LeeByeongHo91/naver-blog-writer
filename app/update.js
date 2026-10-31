@@ -68,7 +68,13 @@ export async function applyUpdate(log) {
   log("압축을 푸는 중...");
   const out = path.join(work, "files");
   const quote = (p) => `'${p.replace(/'/g, "''")}'`;
-  await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `Expand-Archive -LiteralPath ${quote(zip)} -DestinationPath ${quote(out)} -Force`]);
+  // Expand-Archive는 PC 보안 설정(스크립트 실행 정책)에 따라 막힐 수 있어서 .NET 압축 풀기를 바로 쓴다
+  await run("powershell.exe", [
+    "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
+    `Add-Type -AssemblyName System.IO.Compression.FileSystem; [IO.Compression.ZipFile]::ExtractToDirectory(${quote(zip)}, ${quote(out)})`,
+  ]).catch((error) => {
+    throw new Error(`압축을 풀지 못했습니다. ${String(error.stderr || error.message).trim().split(/\r?\n/)[0]}`);
+  });
   const src = path.join(out, "블로그글생성기");
   if (!fs.existsSync(path.join(src, "app", "app.js"))) throw new Error("받은 파일이 올바르지 않습니다. 잠시 뒤 다시 해 주세요.");
 

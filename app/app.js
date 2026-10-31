@@ -225,6 +225,10 @@ async function write(revise) {
 async function toNaver(post) {
   const p = pending;
   const blocks = toBlocks(post, p.files, p.config.footer, { keepOrder: !FORMATS[p.format].freeOrder });
+  // 설정 '글 맨 위에 항상 넣을 이미지'는 제목 바로 아래, 도입 글 앞에 넣는다
+  const header = await headerImagesFor(p.config, p.userId);
+  if (header.length) blocks.unshift(...header.map((file) => ({ type: "photo", file })), { type: "blank" });
+  for (const [i, file] of header.entries()) p.names.set(file, `맨 위 이미지: ${p.config.headerImages[i]}`);
   const backup = backupPost(post.title, blocks, p.userId, p.names);
   job.step = "naver";
   log("네이버 글쓰기 화면을 엽니다. 입력이 끝날 때까지 그 브라우저 창을 건드리지 말아 주세요.");
@@ -386,6 +390,64 @@ function pcFolders() {
   return candidates.map(([label, paths]) => ({ name: label, path: paths.find((p) => fs.existsSync(p)) })).filter((f) => f.path);
 }
 
+// ---------- 글 맨 위에 항상 넣을 이미지 ----------
+// 설정에서 고른 이미지를 사용자 폴더(header-images)에 복사해 두고, 글을 만들 때마다 제목 바로 아래에 넣는다.
+
+const HEADER_EXTS = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif", ".heic", ".heif"]);
+
+function headerFile(name) {
+  if (!/^[^\\/:*?"<>|]+$/.test(name ?? "") || name.startsWith(".")) return null;
+  const file = path.join(userPaths().header, name);
+  return fs.existsSync(file) ? file : null;
+}
+
+async function addHeaderImage(req, name) {
+  const base = path.basename(String(name ?? "")).replace(/[<>:"/\\|?*\x00-\x1f]/g, "_");
+  const ext = path.extname(base).toLowerCase();
+  if (!HEADER_EXTS.has(ext)) return { ok: false, message: "사진 파일(JPG, PNG, GIF, WEBP, HEIC)만 넣을 수 있습니다." };
+  const dir = userPaths().header;
+  fs.mkdirSync(dir, { recursive: true });
+  let target = path.join(dir, base);
+  for (let n = 1; fs.existsSync(target); n++) target = path.join(dir, `${path.basename(base, ext)} (${n})${ext}`);
+  await new Promise((resolve, reject) => {
+    const out = fs.createWriteStream(target);
+    req.pipe(out);
+    out.on("finish", resolve);
+    out.on("error", reject);
+  });
+  const config = loadConfig();
+  saveConfig({ ...config, headerImages: [...(config.headerImages ?? []), path.basename(target)] });
+  return { ok: true, images: loadConfig().headerImages };
+}
+
+// 빼기(remove), 순서 바꾸기(up, down)
+function changeHeaderImage({ action, name }) {
+  const config = loadConfig();
+  const list = [...(config.headerImages ?? [])];
+  const i = list.indexOf(name);
+  if (i < 0) return { ok: false, message: "그 이미지를 찾을 수 없습니다." };
+  if (action === "remove") {
+    list.splice(i, 1);
+    const file = headerFile(name);
+    if (file) fs.rmSync(file, { force: true });
+  } else if (action === "up" || action === "down") {
+    const j = action === "up" ? i - 1 : i + 1;
+    if (j >= 0 && j < list.length) [list[i], list[j]] = [list[j], list[i]];
+  }
+  saveConfig({ ...config, headerImages: list });
+  return { ok: true, images: list };
+}
+
+// 글에 넣을 맨 위 이미지 파일들 (없어진 파일은 건너뛴다. HEIC는 JPG로 바꾼 파일)
+async function headerImagesFor(config, userId) {
+  const files = [];
+  for (const name of config.headerImages ?? []) {
+    const file = path.join(userPaths(userId).header, name);
+    if (fs.existsSync(file)) files.push(await readable(file));
+  }
+  return files;
+}
+
 // ---------- 사용자(블로그) 바꾸기 ----------
 
 // 사용자 추가·바꾸기·이름 바꾸기·지우기. 글을 만드는 중이거나 네이버 창이 열려 있으면 그 사용자의 일이 끝난 뒤에 하게 한다
@@ -536,6 +598,17 @@ const server = http.createServer(async (req, res) => {
     } else if (req.method === "GET" && url.pathname === "/api/post") {
       const text = readPost(url.searchParams.get("name"));
       json(text === null ? { ok: false, message: "글을 찾을 수 없습니다." } : { ok: true, text });
+    } else if (req.method === "POST" && url.pathname === "/api/header-image") {
+      json(await addHeaderImage(req, url.searchParams.get("name")));
+    } else if (req.method === "POST" && url.pathname === "/api/header-image/change") {
+      json(changeHeaderImage(await readBody(req)));
+    } else if (req.method === "GET" && url.pathname === "/api/header-thumb") {
+      const file = headerFile(url.searchParams.get("name"));
+      if (!file) return notFound();
+      // 배너는 잘리지 않게 전체를 줄여서 보여 준다 (사진 고르기의 정사각형 미리보기와 다르게)
+      const preview = await sharp(await readable(file), { failOn: "none" }).rotate().resize(400, 300, { fit: "inside" }).png().toBuffer();
+      res.writeHead(200, { "Content-Type": "image/png" });
+      res.end(preview);
     } else if (req.method === "POST" && url.pathname === "/api/upload") {
       json(await upload(req, url.searchParams.get("name"), url.searchParams.get("sub")));
     } else if (req.method === "GET" && url.pathname === "/api/update") {

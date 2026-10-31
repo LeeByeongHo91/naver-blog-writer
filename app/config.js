@@ -27,6 +27,7 @@ export const DEFAULTS = {
   length: "사진마다 3~5문장",
   fixedHashtags: "",
   styleSamples: [], // 블로그 주인이 직접 쓴 글(네이버에서 복사한 그대로). 있으면 말투·길이 설정보다 우선
+  headerImages: [], // 글 맨 위(제목 바로 아래)에 항상 넣을 이미지의 파일 이름. 파일은 userPaths().header 폴더에 있다
   footer: "", // 글 끝(마무리 글과 해시태그 사이)에 항상 붙일 내용. 주소만 있는 줄은 링크 카드, "지도:" 줄은 네이버 지도
   naverTemplate: "", // 네이버 글쓰기의 '내 템플릿' 이름. 있으면 글 맨 아래(해시태그 앞)에 그 템플릿을 넣는다
   replaceWords: [], // [{ from: "선생님", to: "사범님" }] AI에게 시키고, 다 쓴 글에서도 한 번 더 바꾼다
@@ -50,6 +51,7 @@ export function userPaths(id = currentUser().id) {
     profile: path.join(dir, "browser-profile"), // 네이버 로그인이 남는 Edge 프로필
     posts: path.join(dir, "posts"), // 만든 글 백업
     usage: path.join(dir, "usage.json"), // AI 사용료 기록
+    header: path.join(dir, "header-images"), // 글 맨 위에 항상 넣을 이미지 (설정에서 넣은 것을 복사해 둔다)
   };
 }
 
