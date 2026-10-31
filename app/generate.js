@@ -195,9 +195,17 @@ async function videoFrames(files) {
   return frames;
 }
 
+// 미리 보기에서 '다시 써 줘'를 눌렀을 때 붙이는 안내. 앞 글을 보여 주고 요청대로 고치게 한다
+function revision({ post, request }) {
+  const ask = request?.trim()
+    ? `블로그 주인이 이렇게 고쳐 달라고 했습니다: "${request.trim()}"\n요청한 부분을 고치고, 요청하지 않은 부분은 되도록 그대로 둡니다.`
+    : "블로그 주인이 마음에 들지 않는다며 다시 써 달라고 했습니다. 같은 사진과 같은 요청으로, 앞 글과 표현과 흐름이 다르게 새로 씁니다.";
+  return `\n\n앞서 이 자료로 아래 글을 썼습니다. ${ask} 결과는 처음과 같은 형식으로 글 전체를 다시 줍니다.\n<앞 글>\n${JSON.stringify(post)}\n</앞 글>`;
+}
+
 // notes: 사진마다 블로그 주인이 적은 메모 (photos와 같은 순서). format: FORMATS의 이름.
-// onProgress(글자 수): AI가 쓰는 동안 몇 글자째인지 알려 준다
-export async function generatePost(config, photos, topic, memo, emphasis = "", { notes = [], format = "daily", onProgress } = {}) {
+// onProgress(글자 수): AI가 쓰는 동안 몇 글자째인지 알려 준다. revise: { post, request } 앞 글을 고쳐 쓸 때
+export async function generatePost(config, photos, topic, memo, emphasis = "", { notes = [], format = "daily", onProgress, revise } = {}) {
   const style = FORMATS[format] ?? FORMATS.daily;
   const frames = await videoFrames(photos.filter(isVideo));
   const content = [];
@@ -245,7 +253,7 @@ ${samples.length ? "말투와 분량: 블로그 주인이 직접 쓴 예시 글�
       config.naverTemplate?.trim()
         ? "\n\n글 맨 아래에는 블로그 주인이 네이버에 저장해 둔 고정 템플릿(가게·도장 소개, 시간표, 지도, 톡톡·유튜브·인스타그램 안내 등)이 자동으로 붙습니다. 그런 고정 안내는 마무리 글에 쓰지 마세요."
         : ""
-    }${standingRequests(config)}`,
+    }${standingRequests(config)}${revise ? revision(revise) : ""}`,
   });
 
   const client = new Anthropic({ apiKey: config.apiKey });

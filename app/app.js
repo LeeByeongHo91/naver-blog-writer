@@ -4,11 +4,13 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import { exec, spawn } from "node:child_process";
 import sharp from "sharp";
 import { chromium } from "playwright-core";
-import { loadConfig, saveConfig, listMedia, listSubfolders, loadUsed, markUsed, isVideo, DATA_DIR, userPaths, loadUsers, currentUser, addUser, switchUser, renameUser, removeUser } from "./config.js";
+import { loadConfig, saveConfig, listMedia, listSubfolders, loadUsed, markUsed, isVideo, DATA_DIR, userPaths, loadUsers, currentUser, addUser, switchUser, renameUser, removeUser, recordUsage, usageSummary, listPosts, readPost, IMAGE_EXTS, VIDEO_EXTS } from "./config.js";
+import { readable } from "./media.js";
 import { generatePost, explainError, toBlocks, sortFiles, FORMATS, checkApiKey } from "./generate.js";
 import { isBlogId, recentPosts, postText } from "./blog.js";
 import { VERSION, checkUpdate, updateInfo, applyUpdate } from "./update.js";
@@ -33,6 +35,7 @@ function browse(folder) {
     const places = [];
     const drive = guessDriveFolder();
     if (drive) places.push({ name: "구글 드라이브 (내 드라이브)", path: drive });
+    places.push(...pcFolders());
     for (const letter of "CDEFGHIJKLMNOPQRSTUVWXYZ") {
       if (fs.existsSync(`${letter}:\\`)) places.push({ name: `${letter}: 드라이브`, path: `${letter}:\\` });
     }
@@ -101,7 +104,7 @@ async function thumbnail(file) {
   const out = path.join(THUMB_DIR, `${key}.jpg`);
   if (!fs.existsSync(out)) {
     fs.mkdirSync(THUMB_DIR, { recursive: true });
-    await sharp(file).rotate().resize(360, 360, { fit: "cover" }).jpeg({ quality: 75 }).toFile(out);
+    await sharp(await readable(file)).rotate().resize(360, 360, { fit: "cover" }).jpeg({ quality: 75 }).toFile(out);
   }
   return out;
 }
@@ -124,8 +127,10 @@ function sendVideo(req, res, file) {
 }
 
 // ---------- 글 만들기 ----------
+// 흐름: AI가 글 쓰기(ai) → [미리 보기를 켰으면] 사용자가 읽고 고치기(review) → 네이버에 입력(naver) → 끝(done) / 문제(error)
 
-const job = { running: false, step: "", logs: [], progress: 0, startedAt: 0, result: null, error: "" };
+const job = { running: false, step: "", logs: [], progress: 0, startedAt: 0, result: null, error: "", shot: "", draft: null, draftId: 0 };
+let pending = null; // 미리 보기 중인 글을 네이버에 넣거나 다시 쓸 때 필요한 것들 (사용자, 설정, 사진 등)
 let editor = null; // 마지막으로 연 네이버 글쓰기 창 (사용자가 닫을 때까지 열어 둔다)
 let windowClosed = false;
 let appWindow = null; // 프로그램 창 (업데이트 뒤 다시 시작할 때 닫는다)
@@ -136,14 +141,26 @@ function log(text) {
   console.log(text);
 }
 
-function backupPost(title, blocks, userId) {
+// 지금 뭔가 하고 있어서 다른 일(새 글, 사용자 바꾸기, 업데이트)을 하면 안 되면 그 이유를 돌려준다
+function busy() {
+  if (job.running) return "글을 만드는 중입니다. 끝날 때까지 기다려 주세요.";
+  if (job.step === "review") return "앞에서 만든 글을 확인하는 중입니다. 아래 '글 확인'에서 '이대로 네이버에 넣기'나 '그만두기'를 먼저 눌러 주세요.";
+  if (editor) return "앞에서 연 네이버 글쓰기 창이 아직 열려 있습니다. 그 창에서 글을 확인(발행)한 뒤 창을 닫고 다시 해 주세요.";
+  return "";
+}
+
+// 만든 글을 txt로 남긴다 ('지난 글'에서 다시 볼 수 있다). names: 바꾼 사진 경로 → 원래 파일 이름
+function backupPost(title, blocks, userId, names) {
   const dir = userPaths(userId).posts;
   fs.mkdirSync(dir, { recursive: true });
-  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}`;
   const file = path.join(dir, `${stamp}.txt`);
+  const name = (f) => names.get(f) ?? path.basename(f);
   const line = (b) => {
-    if (b.type === "photo") return `[사진: ${path.basename(b.file)}]`;
-    if (b.type === "video") return `[동영상: ${path.basename(b.file)}]`;
+    if (b.type === "photo") return `[사진: ${name(b.file)}]`;
+    if (b.type === "video") return `[동영상: ${name(b.file)}]`;
     if (b.type === "place") return `[지도: ${b.query}]`;
     if (b.type === "link") return b.url;
     return b.type === "text" ? b.text : "";
@@ -154,8 +171,8 @@ function backupPost(title, blocks, userId) {
 
 // 요청이 맞는지 확인하고, 문제가 있으면 사용자에게 보여 줄 문장을 돌려준다
 function checkRun(config, body) {
-  if (job.running) return "이미 글을 만들고 있습니다. 끝날 때까지 기다려 주세요.";
-  if (editor) return "앞에서 연 네이버 글쓰기 창이 아직 열려 있습니다. 그 창에서 글을 확인(발행)한 뒤 창을 닫고 다시 눌러 주세요.";
+  const why = busy();
+  if (why) return why;
   if (!config.apiKey || !config.blogId || !config.photoFolder) return "설정이 아직 안 되어 있습니다. '설정' 탭에서 API 키, 블로그 아이디, 사진 폴더를 넣고 저장해 주세요.";
   if (!Array.isArray(body.photos) || !body.photos.length) return "글에 넣을 사진을 한 장 이상 골라 주세요.";
   if (body.photos.length > MAX_PHOTOS) return `사진은 한 번에 ${MAX_PHOTOS}장까지 넣을 수 있습니다.`;
@@ -163,63 +180,167 @@ function checkRun(config, body) {
   return "";
 }
 
-async function runJob(config, body) {
-  const userId = currentUser().id; // 글을 만드는 동안에는 사용자를 못 바꾸게 막지만, 기록은 시작할 때의 사용자에게 남긴다
-  const photos = body.photos;
-  const notes = photos.map((_, i) => String(body.notes?.[i] ?? ""));
-  const topic = String(body.topic ?? "").trim() || body.folderName || config.topic;
-  const memo = [config.memo, String(body.memo ?? "").trim()].filter(Boolean).join("\n");
-  // 하위 폴더 방식은 폴더를, 아니면 사진 하나하나를 '사용함'으로 기록한다
-  const usedKeys = config.mode === "subfolder" && body.folder ? [body.folder] : photos;
+function fail(error) {
+  job.error = job.step === "ai" ? `글을 만들지 못했습니다.\n${explainError(error)}` : error.message;
+  log(job.error);
+  job.failedStep = job.step;
+  job.step = "error";
+}
 
-  Object.assign(job, { running: true, step: "ai", logs: [], progress: 0, startedAt: Date.now(), result: null, error: "" });
-  const format = FORMATS[body.format] ? body.format : "daily";
-  log(`'${FORMATS[format].label}' 형식으로, 사진·동영상 ${photos.length}개를 보고 AI가 글을 씁니다. 보통 1~3분 걸리고, 사진이 많을수록 오래 걸립니다.`);
+// AI에게 글을 쓰게 한다. revise가 있으면 앞 글을 고쳐 쓴다. 다 쓰면 미리 보기로 가거나 바로 네이버에 넣는다
+async function write(revise) {
+  const p = pending;
+  Object.assign(job, { running: true, step: "ai", progress: 0, error: "", shot: "" });
   try {
-    const { post, costWon, styleSamples, checks } = await generatePost(config, photos, topic, memo, String(body.emphasis ?? "").trim(), {
-      notes,
-      format,
+    const { post, costWon, styleSamples, checks } = await generatePost(p.config, p.files, p.topic, p.memo, p.emphasis, {
+      notes: p.notes,
+      format: p.format,
+      revise,
       onProgress: (chars) => (job.progress = chars),
     });
-    log(`글 완성: "${post.title}" (사용료 약 ${costWon}원${styleSamples ? `, 말투 예시 ${styleSamples}편 참고` : ""})`);
+    recordUsage(costWon, revise ? "rewrite" : "new", p.userId);
+    p.costWon += costWon;
+    log(`${revise ? "다시 쓴 글" : "글 완성"}: "${post.title}" (사용료 약 ${costWon}원${styleSamples ? `, 말투 예시 ${styleSamples}편 참고` : ""})`);
     if (checks.length) log(checks.map((c) => "· " + c).join("\n"));
-    const blocks = toBlocks(post, photos, config.footer, { keepOrder: !FORMATS[format].freeOrder });
-    const backup = backupPost(post.title, blocks, userId);
-
-    job.step = "naver";
-    log("네이버 글쓰기 화면을 엽니다. 입력이 끝날 때까지 그 브라우저 창을 건드리지 말아 주세요.");
-    let failed;
-    try {
-      editor = await openEditor(config.blogId, userPaths(userId).profile, log);
-      const context = editor.context;
-      context.on("close", () => {
-        if (editor?.context === context) editor = null;
-        quitIfDone();
-      });
-      failed = await writeDraft(editor, post.title, blocks, { log, save: !DRY_RUN, template: config.naverTemplate?.trim() });
-    } catch (error) {
-      const shot = editor ? await screenshot(editor.page, "error") : "";
-      throw new Error(
-        `네이버에 입력하는 중 문제가 생겼습니다: ${error.message}\n만든 글은 없어지지 않았습니다. 이 파일에 저장되어 있으니 복사해서 직접 붙여넣을 수 있습니다:\n${backup}` +
-          (shot ? `\n(오류 화면 사진: ${shot})` : ""),
-      );
+    if (p.review) {
+      Object.assign(job, { step: "review", draft: { post, checks }, draftId: job.draftId + 1 });
+      log("글이 완성됐습니다. 아래 '글 확인'에서 읽어 보고, 고칠 곳은 고친 뒤 '이대로 네이버에 넣기'를 눌러 주세요.");
+      return;
     }
-    if (!DRY_RUN) markUsed(usedKeys, userId);
-    job.result = { title: post.title, costWon, failed, backup };
-    log("임시저장까지 끝났습니다. 네이버 창에서 글을 확인하고, 괜찮으면 오른쪽 위 '발행'을 눌러 주세요. 확인이 끝나면 네이버 창을 닫으면 됩니다.");
-    if (failed.length) {
-      log(`[확인 필요] 자동으로 넣지 못한 것이 있어서, 그 자리에 주소나 [여기에 지도 넣기] 표시만 남겼습니다: ${failed.join(", ")}`);
-      log("글쓰기 화면 위쪽의 '장소'(지도) 또는 '링크' 버튼으로 직접 넣어 주세요.");
-    }
-    job.step = "done";
+    await toNaver(post);
   } catch (error) {
-    job.error = job.step === "ai" ? `글을 만들지 못했습니다.\n${explainError(error)}` : error.message;
-    log(job.error);
-    job.step = "error";
+    fail(error);
   } finally {
     job.running = false;
     quitIfDone();
   }
+}
+
+// 다 된 글을 네이버 글쓰기 화면에 넣고 임시저장한다
+async function toNaver(post) {
+  const p = pending;
+  const blocks = toBlocks(post, p.files, p.config.footer, { keepOrder: !FORMATS[p.format].freeOrder });
+  const backup = backupPost(post.title, blocks, p.userId, p.names);
+  job.step = "naver";
+  log("네이버 글쓰기 화면을 엽니다. 입력이 끝날 때까지 그 브라우저 창을 건드리지 말아 주세요.");
+  let failed;
+  try {
+    editor = await openEditor(p.config.blogId, userPaths(p.userId).profile, log);
+    const context = editor.context;
+    context.on("close", () => {
+      if (editor?.context === context) editor = null;
+      quitIfDone();
+    });
+    failed = await writeDraft(editor, post.title, blocks, { log, save: !DRY_RUN, template: p.config.naverTemplate?.trim() });
+  } catch (error) {
+    job.shot = editor ? await screenshot(editor.page, "error").catch(() => "") : "";
+    throw new Error(
+      `네이버에 입력하는 중 문제가 생겼습니다: ${error.message}\n만든 글은 없어지지 않았습니다. 위쪽 '지난 글' 탭에서 복사해서 직접 붙여넣을 수 있습니다.`,
+    );
+  }
+  if (!DRY_RUN) markUsed(p.usedKeys, p.userId);
+  job.result = { title: post.title, costWon: p.costWon, failed, backup };
+  log("임시저장까지 끝났습니다. 네이버 창에서 글을 확인하고, 괜찮으면 오른쪽 위 '발행'을 눌러 주세요. 확인이 끝나면 네이버 창을 닫으면 됩니다.");
+  if (failed.length) {
+    log(`[확인 필요] 자동으로 넣지 못한 것이 있어서, 그 자리에 주소나 [여기에 지도 넣기] 표시만 남겼습니다: ${failed.join(", ")}`);
+    log("글쓰기 화면 위쪽의 '장소'(지도) 또는 '링크' 버튼으로 직접 넣어 주세요.");
+  }
+  job.step = "done";
+  pending = null;
+}
+
+async function runJob(config, body) {
+  const photos = body.photos;
+  const format = FORMATS[body.format] ? body.format : "daily";
+  Object.assign(job, { running: true, step: "ai", logs: [], progress: 0, startedAt: Date.now(), result: null, error: "", shot: "", draft: null });
+  log(`'${FORMATS[format].label}' 형식으로, 사진·동영상 ${photos.length}개를 보고 AI가 글을 씁니다. 보통 1~3분 걸리고, 사진이 많을수록 오래 걸립니다.`);
+  try {
+    // 아이폰 사진(HEIC)은 JPG로 바꾼 파일을 AI와 네이버에 쓴다
+    const files = [];
+    for (const file of photos) files.push(await readable(file));
+    if (files.some((f, i) => f !== photos[i])) log("아이폰 사진(HEIC)을 JPG로 바꿔서 씁니다.");
+    pending = {
+      userId: currentUser().id, // 글을 만드는 동안에는 사용자를 못 바꾸게 막지만, 기록은 시작할 때의 사용자에게 남긴다
+      config,
+      files,
+      originals: photos,
+      names: new Map(files.map((f, i) => [f, path.basename(photos[i])])),
+      notes: photos.map((_, i) => String(body.notes?.[i] ?? "")),
+      topic: String(body.topic ?? "").trim() || body.folderName || config.topic,
+      memo: [config.memo, String(body.memo ?? "").trim()].filter(Boolean).join("\n"),
+      emphasis: String(body.emphasis ?? "").trim(),
+      format,
+      review: Boolean(body.review),
+      // 하위 폴더 방식은 폴더를, 아니면 사진 하나하나를 '사용함'으로 기록한다
+      usedKeys: config.mode === "subfolder" && body.folder ? [body.folder] : photos,
+      costWon: 0,
+    };
+  } catch (error) {
+    job.running = false;
+    return fail(error);
+  }
+  await write();
+}
+
+// 미리 보기에서 사용자가 고른 것: accept(고친 글로 네이버에 넣기) / rewrite(다시 써 줘) / cancel(그만두기)
+function review({ action, post, request }) {
+  if (job.step !== "review" || !pending) return { ok: false, message: "확인할 글이 없습니다." };
+  if (action === "cancel") {
+    Object.assign(job, { step: "", draft: null, logs: [] });
+    pending = null;
+    return { ok: true };
+  }
+  const draft = cleanDraft(post, job.draft.post);
+  if (action === "accept") {
+    Object.assign(job, { running: true, draft: null });
+    toNaver(draft)
+      .catch(fail)
+      .finally(() => {
+        job.running = false;
+        quitIfDone();
+      });
+    return { ok: true };
+  }
+  if (action === "rewrite") {
+    log(request?.trim() ? `다시 써 달라고 했습니다: "${request.trim()}"` : "다시 써 달라고 했습니다.");
+    write({ post: draft, request: String(request ?? "") });
+    return { ok: true };
+  }
+  return { ok: false, message: "알 수 없는 요청입니다." };
+}
+
+// 화면에서 고친 글을 받아 모양을 맞춘다. 사진 자리(photos)는 화면에서 못 바꾸므로 원래 글의 것을 쓴다
+function cleanDraft(edited, original) {
+  const text = (v) => String(v ?? "");
+  return {
+    title: text(edited?.title).trim() || original.title,
+    intro: text(edited?.intro),
+    sections: original.sections.map((s, i) => ({
+      photos: s.photos,
+      caption: text(edited?.sections?.[i]?.caption ?? s.caption),
+      heading: text(edited?.sections?.[i]?.heading ?? s.heading),
+      text: text(edited?.sections?.[i]?.text ?? s.text),
+    })),
+    outro: text(edited?.outro),
+    hashtags: Array.isArray(edited?.hashtags) ? edited.hashtags.map((t) => text(t).replace(/^#/, "").trim()).filter(Boolean) : original.hashtags,
+  };
+}
+
+// 오류가 났을 때 '오류 내용 복사'로 프로그램을 준 사람에게 보낼 글
+function errorReport() {
+  const stepName = { ai: "AI가 글 쓰기", naver: "네이버에 입력" }[job.failedStep] ?? job.failedStep ?? "";
+  return [
+    "[블로그 글 생성기 오류]",
+    `버전 ${VERSION} · ${new Date().toLocaleString("ko-KR")}`,
+    `단계: ${stepName}`,
+    `오류: ${job.error}`,
+    job.shot ? `오류 화면 사진: ${job.shot}` : null,
+    "",
+    "진행 기록:",
+    ...job.logs.slice(-12).map((l) => "- " + l.replace(/\n/g, " ")),
+  ]
+    .filter((l) => l !== null)
+    .join("\n");
 }
 
 // 프로그램 창도 닫혔고, 글 만들기도 끝났고, 네이버 창도 닫혔으면 프로그램을 끝낸다
@@ -228,13 +349,43 @@ function quitIfDone() {
   if (windowClosed && !job.running && !editor) process.exit(0);
 }
 
+// 프로그램 창에 끌어다 놓거나 'PC에서 사진 추가'로 고른 사진을 사진 폴더에 복사한다 (하위 폴더 방식이면 지금 보고 있는 하위 폴더에).
+// 같은 이름이 있으면 "이름 (1).jpg"처럼 바꿔서 덮어쓰지 않는다
+async function upload(req, name, sub) {
+  const config = loadConfig();
+  const root = config.photoFolder;
+  if (!root || !fs.existsSync(root)) return { ok: false, message: "사진 폴더를 찾을 수 없습니다. 설정에서 사진 폴더를 먼저 골라 주세요." };
+  const folder = config.mode === "subfolder" && sub && path.resolve(sub).startsWith(path.resolve(root) + path.sep) && fs.existsSync(sub) ? sub : root;
+  const base = path.basename(String(name ?? "")).replace(/[<>:"/\\|?*\x00-\x1f]/g, "_");
+  const ext = path.extname(base).toLowerCase();
+  if (!base || !(IMAGE_EXTS.has(ext) || VIDEO_EXTS.has(ext))) return { ok: false, message: `${base || "파일"}: 사진이나 동영상 파일만 넣을 수 있습니다.` };
+  let target = path.join(folder, base);
+  for (let n = 1; fs.existsSync(target); n++) target = path.join(folder, `${path.basename(base, ext)} (${n})${ext}`);
+  await new Promise((resolve, reject) => {
+    const out = fs.createWriteStream(target);
+    req.pipe(out);
+    out.on("finish", resolve);
+    out.on("error", reject);
+    req.on("error", reject);
+  });
+  return { ok: true, path: target };
+}
+
+// 폴더 고르기 첫 화면에 보여 줄 이 PC의 사진 폴더와 바탕 화면 (있는 것만)
+function pcFolders() {
+  const home = os.homedir();
+  const candidates = [
+    ["📷 내 PC 사진 폴더", [path.join(home, "Pictures"), path.join(home, "OneDrive", "사진"), path.join(home, "OneDrive", "Pictures")]],
+    ["🖥 바탕 화면", [path.join(home, "OneDrive", "바탕 화면"), path.join(home, "OneDrive", "Desktop"), path.join(home, "Desktop")]],
+  ];
+  return candidates.map(([label, paths]) => ({ name: label, path: paths.find((p) => fs.existsSync(p)) })).filter((f) => f.path);
+}
+
 // ---------- 사용자(블로그) 바꾸기 ----------
 
 // 사용자 추가·바꾸기·이름 바꾸기·지우기. 글을 만드는 중이거나 네이버 창이 열려 있으면 그 사용자의 일이 끝난 뒤에 하게 한다
 function changeUsers({ action, id, name, copyApiKey }) {
-  if (action !== "rename" && (job.running || editor)) {
-    return { ok: false, message: "글을 만드는 중이거나 네이버 글쓰기 창이 열려 있어서 지금은 사용자를 바꿀 수 없습니다. 네이버 창을 닫은 뒤 다시 해 주세요." };
-  }
+  if (action !== "rename" && busy()) return { ok: false, message: busy() };
   name = String(name ?? "").trim();
   if ((action === "add" || action === "rename") && !name) return { ok: false, message: "이름을 적어 주세요." };
   if (action === "add") addUser(name, Boolean(copyApiKey));
@@ -242,7 +393,7 @@ function changeUsers({ action, id, name, copyApiKey }) {
   else if (action === "rename") renameUser(id, name);
   else if (action === "remove") removeUser(id);
   else return { ok: false, message: "알 수 없는 요청입니다." };
-  if (action !== "rename") Object.assign(job, { step: "", logs: [], result: null, error: "", startedAt: 0 }); // 앞 사용자의 진행 기록은 보여 주지 않는다
+  if (action !== "rename") Object.assign(job, { step: "", logs: [], result: null, error: "", startedAt: 0, draft: null }); // 앞 사용자의 진행 기록은 보여 주지 않는다
   return { ok: true, users: loadUsers() };
 }
 
@@ -252,7 +403,7 @@ const update = { running: false, logs: [], error: "", done: false };
 
 function startUpdate() {
   if (update.running) return { ok: false, message: "이미 업데이트하고 있습니다." };
-  if (job.running || editor) return { ok: false, message: "글을 만드는 중이거나 네이버 글쓰기 창이 열려 있습니다. 네이버 창을 닫은 뒤 다시 눌러 주세요." };
+  if (busy()) return { ok: false, message: busy() };
   Object.assign(update, { running: true, logs: [], error: "", done: false });
   applyUpdate((text) => { update.logs.push(text); console.log(text); })
     .then(() => {
@@ -352,6 +503,29 @@ const server = http.createServer(async (req, res) => {
       if (problem) return json({ ok: false, message: problem });
       runJob(config, body);
       json({ ok: true });
+    } else if (req.method === "POST" && url.pathname === "/api/review") {
+      json(review(await readBody(req)));
+    } else if (req.method === "GET" && url.pathname === "/api/report") {
+      json({ ok: true, text: errorReport() });
+    } else if (req.method === "POST" && url.pathname === "/api/open") {
+      // 탐색기로 보여 준다: 지난 글 폴더, 오류 화면 사진
+      const { what } = await readBody(req);
+      if (what === "posts") {
+        fs.mkdirSync(userPaths().posts, { recursive: true });
+        exec(`explorer "${userPaths().posts}"`);
+      } else if (what === "shot" && job.shot && fs.existsSync(job.shot)) {
+        exec(`explorer /select,"${job.shot}"`);
+      }
+      json({ ok: true });
+    } else if (req.method === "GET" && url.pathname === "/api/usage") {
+      json(usageSummary());
+    } else if (req.method === "GET" && url.pathname === "/api/posts") {
+      json(listPosts());
+    } else if (req.method === "GET" && url.pathname === "/api/post") {
+      const text = readPost(url.searchParams.get("name"));
+      json(text === null ? { ok: false, message: "글을 찾을 수 없습니다." } : { ok: true, text });
+    } else if (req.method === "POST" && url.pathname === "/api/upload") {
+      json(await upload(req, url.searchParams.get("name"), url.searchParams.get("sub")));
     } else if (req.method === "GET" && url.pathname === "/api/update") {
       json({ ...updateInfo(), current: VERSION, ...update });
     } else if (req.method === "POST" && url.pathname === "/api/update/check") {
@@ -362,7 +536,13 @@ const server = http.createServer(async (req, res) => {
       json({ ok: true });
       setTimeout(() => process.exit(0), 100);
     } else if (req.method === "GET" && url.pathname === "/api/job") {
-      json({ ...job, elapsed: job.startedAt ? Math.round((Date.now() - job.startedAt) / 1000) : 0, editorOpen: Boolean(editor) });
+      json({
+        ...job,
+        elapsed: job.startedAt ? Math.round((Date.now() - job.startedAt) / 1000) : 0,
+        editorOpen: Boolean(editor),
+        review: Boolean(pending?.review),
+        photos: (pending?.originals ?? []).map((p) => ({ path: p, name: path.basename(p), video: isVideo(p) })),
+      });
     } else {
       notFound();
     }

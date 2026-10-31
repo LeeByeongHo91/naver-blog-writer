@@ -7,7 +7,7 @@ export const DATA_DIR = path.join(process.env.LOCALAPPDATA ?? process.cwd(), "Bl
 const USERS_PATH = path.join(DATA_DIR, "users.json");
 const PROGRAM_DIR = path.join(import.meta.dirname, "..");
 
-export const IMAGE_EXTS = new Set([".jpg", ".jpeg", ".png", ".webp"]);
+export const IMAGE_EXTS = new Set([".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"]); // HEIC(아이폰)는 media.js가 JPG로 바꿔 쓴다
 export const VIDEO_EXTS = new Set([".mp4", ".mov", ".m4v", ".webm", ".avi", ".wmv", ".mkv"]);
 export const isVideo = (file) => VIDEO_EXTS.has(path.extname(file).toLowerCase());
 
@@ -19,6 +19,7 @@ export const DEFAULTS = {
   photosPerPost: 10,
   order: "name", // name | oldest | newest
   askEachTime: true,
+  reviewFirst: true, // AI가 쓴 글을 네이버에 넣기 전에 화면에서 먼저 보고 고친다
   blogAbout: "", // 어떤 블로그이고 누가 읽는지. AI가 글의 관점과 독자를 정할 때 쓴다
   topic: "",
   memo: "",
@@ -48,6 +49,7 @@ export function userPaths(id = currentUser().id) {
     used: path.join(dir, "used.json"),
     profile: path.join(dir, "browser-profile"), // 네이버 로그인이 남는 Edge 프로필
     posts: path.join(dir, "posts"), // 만든 글 백업
+    usage: path.join(dir, "usage.json"), // AI 사용료 기록
   };
 }
 
@@ -157,6 +159,53 @@ export function markUsed(paths, id) {
   const used = new Set(loadUsed(id));
   for (const p of paths) used.add(p);
   fs.writeFileSync(userPaths(id).used, JSON.stringify([...used], null, 2), "utf8");
+}
+
+// AI를 한 번 쓸 때마다 남긴다. kind: "new"(새 글) | "rewrite"(다시 쓰기)
+export function recordUsage(won, kind, id) {
+  const file = userPaths(id).usage;
+  const list = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : [];
+  list.push({ at: new Date().toISOString(), won, kind });
+  fs.writeFileSync(file, JSON.stringify(list), "utf8");
+}
+
+// 이번 달과 지난달에 만든 글 수와 사용료 (실제 청구 금액은 platform.claude.com의 Billing이 정확하다)
+export function usageSummary(id) {
+  const file = userPaths(id).usage;
+  const list = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : [];
+  const now = new Date();
+  const monthKey = (d) => `${d.getFullYear()}-${d.getMonth()}`;
+  const sum = (key) => {
+    const items = list.filter((u) => monthKey(new Date(u.at)) === key);
+    return { posts: items.filter((u) => u.kind === "new").length, won: items.reduce((t, u) => t + u.won, 0) };
+  };
+  return {
+    thisMonth: sum(monthKey(now)),
+    lastMonth: sum(monthKey(new Date(now.getFullYear(), now.getMonth() - 1, 1))),
+    total: { posts: list.filter((u) => u.kind === "new").length, won: list.reduce((t, u) => t + u.won, 0) },
+  };
+}
+
+// 지난 글 목록 (새 글부터). 파일 첫 줄이 제목, 파일 이름이 만든 시각
+export function listPosts(id) {
+  const dir = userPaths(id).posts;
+  if (!fs.existsSync(dir)) return [];
+  return fs
+    .readdirSync(dir)
+    .filter((name) => /^[\w-]+\.txt$/.test(name))
+    .sort()
+    .reverse()
+    .map((name) => {
+      const m = name.match(/^(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})/);
+      const title = fs.readFileSync(path.join(dir, name), "utf8").split(/\r?\n/)[0].trim();
+      return { name, title: title || "(제목 없음)", date: m ? `${m[1]}.${Number(m[2])}.${Number(m[3])} ${m[4]}:${m[5]}` : "" };
+    });
+}
+
+export function readPost(name, id) {
+  if (!/^[\w-]+\.txt$/.test(name ?? "")) return null;
+  const file = path.join(userPaths(id).posts, name);
+  return fs.existsSync(file) ? fs.readFileSync(file, "utf8") : null;
 }
 
 export function listImages(folder) {

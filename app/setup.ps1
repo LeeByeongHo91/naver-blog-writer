@@ -29,6 +29,8 @@ try {
     Step "2/5 Google Drive for Desktop 확인"
     if (Test-Path "$env:ProgramFiles\Google\Drive File Stream") {
         Write-Host "이미 설치되어 있습니다."
+    } elseif ((Read-Host "폰으로 찍은 사진을 구글 드라이브에 올려서 쓰시겠어요? 그러면 구글 드라이브를 설치합니다. (PC에 있는 사진만 쓸 거면 N) [Y/N]") -notmatch '^[yYㅛ]') {
+        Write-Host "구글 드라이브는 건너뜁니다. 사진은 PC 폴더에서 고르거나, 프로그램 창에 끌어다 놓으면 됩니다. 나중에 필요하면 '1_설치'를 다시 실행하세요."
     } else {
         Install-WithWinget "Google.GoogleDrive" "Google Drive"
         Write-Host ""
