@@ -134,6 +134,15 @@
   .sample-head span { flex: 1; }
   .sample textarea { min-height: 140px; }
 
+  /* 확인 창 (브라우저의 confirm/prompt/alert 대신) */
+  .modal-back { position: fixed; inset: 0; z-index: 100; background: rgba(0,0,0,.35); display: flex; align-items: center; justify-content: center; padding: 16px; }
+  .modal { background: #fff; border-radius: 14px; padding: 22px; width: min(460px, 100%); box-shadow: 0 10px 40px rgba(0,0,0,.25); }
+  .modal p { margin: 0 0 14px; white-space: pre-line; line-height: 1.6; }
+  .modal input { margin-bottom: 14px; }
+  .modal .buttons { display: flex; gap: 8px; justify-content: flex-end; }
+  .modal .buttons .ok { background: var(--green); color: #fff; font-weight: bold; }
+  .modal .buttons .ok:hover { background: var(--green-dark); }
+
   /* 미리 보기(글 확인) */
   .review-card { border: 2px solid var(--green); }
   .review-sec { border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin: 10px 0; background: var(--bg); }
@@ -626,6 +635,46 @@ async function api(path, body) {
 const thumbUrl = (item) => "/api/thumb?path=" + encodeURIComponent(item.path);
 const videoUrl = (item) => "/api/video?path=" + encodeURIComponent(item.path) + "#t=1";
 
+// 확인 창. 브라우저의 confirm/prompt/alert는 프로그램 창(Playwright로 연 Edge)에서 저절로 '취소'되어 버리므로 화면 안에 직접 그린다.
+// input이 있으면 글자를 받아 돌려주고(취소하면 null), 없으면 확인 true / 취소 false. cancel: null이면 확인 버튼만
+function modal({ message, input = false, value = "", ok = "확인", cancel = "취소" }) {
+  return new Promise((resolve) => {
+    const back = Object.assign(document.createElement("div"), { className: "modal-back" });
+    const box = Object.assign(document.createElement("div"), { className: "modal" });
+    box.append(Object.assign(document.createElement("p"), { textContent: message }));
+    const field = input ? Object.assign(document.createElement("input"), { type: "text", value }) : null;
+    if (field) box.append(field);
+    const buttons = Object.assign(document.createElement("div"), { className: "buttons" });
+    const done = (answer) => {
+      back.remove();
+      document.removeEventListener("keydown", keys);
+      resolve(answer);
+    };
+    const yes = () => done(field ? field.value : true);
+    const no = () => done(field ? null : false);
+    if (cancel !== null) {
+      const c = Object.assign(document.createElement("button"), { textContent: cancel });
+      c.addEventListener("click", no);
+      buttons.append(c);
+    }
+    const o = Object.assign(document.createElement("button"), { className: "ok", textContent: ok });
+    o.addEventListener("click", yes);
+    buttons.append(o);
+    box.append(buttons);
+    back.append(box);
+    document.body.append(back);
+    const keys = (e) => {
+      if (e.key === "Enter") { e.preventDefault(); yes(); }
+      if (e.key === "Escape") { e.preventDefault(); cancel === null ? yes() : no(); }
+    };
+    document.addEventListener("keydown", keys);
+    (field ?? o).focus();
+  });
+}
+const ask = (message) => modal({ message });
+const askText = (message, value = "") => modal({ message, input: true, value });
+const tell = (message) => modal({ message, cancel: null });
+
 function notice(el, kind, text) {
   el.hidden = !text;
   el.className = "notice " + kind;
@@ -754,7 +803,7 @@ function renderGrid() {
 function togglePhoto(item) {
   const index = selected.findIndex((s) => s.path === item.path);
   if (index >= 0) selected.splice(index, 1);
-  else if (selected.length >= maxPhotos) return alert(`사진은 한 번에 ${maxPhotos}장까지 넣을 수 있습니다.`);
+  else if (selected.length >= maxPhotos) return tell(`사진은 한 번에 ${maxPhotos}장까지 넣을 수 있습니다.`);
   else selected.push({ ...item, note: "" });
   renderGrid();
   renderOrder();
@@ -856,8 +905,8 @@ function renderOrder() {
 
 $("showUsed").addEventListener("change", renderGrid);
 $("reload").addEventListener("click", () => loadPhotos(photoData.folder));
-$("clearPick").addEventListener("click", () => {
-  if (selected.some((s) => s.note.trim()) && !confirm("적어 둔 사진 메모도 함께 지워집니다. 모두 뺄까요?")) return;
+$("clearPick").addEventListener("click", async () => {
+  if (selected.some((s) => s.note.trim()) && !await ask("적어 둔 사진 메모도 함께 지워집니다. 모두 뺄까요?")) return;
   selected = [];
   renderGrid();
   renderOrder();
@@ -1053,14 +1102,14 @@ function collectDraft() {
 
 async function sendReview(body) {
   const result = await api("/api/review", body);
-  if (!result.ok) return alert(result.message);
+  if (!result.ok) return tell(result.message);
   $("reviewCard").hidden = true;
   watchJob();
 }
 $("rvAccept").addEventListener("click", () => sendReview({ action: "accept", post: collectDraft() }));
 $("rvRewrite").addEventListener("click", () => sendReview({ action: "rewrite", post: collectDraft(), request: $("rvRequest").value }));
-$("rvCancel").addEventListener("click", () => {
-  if (confirm("이 글을 네이버에 넣지 않고 그만둘까요? (고른 사진은 그대로 남습니다. 만든 글은 저장되지 않습니다)")) sendReview({ action: "cancel" });
+$("rvCancel").addEventListener("click", async () => {
+  if (await ask("이 글을 네이버에 넣지 않고 그만둘까요? (고른 사진은 그대로 남습니다. 만든 글은 저장되지 않습니다)")) sendReview({ action: "cancel" });
 });
 
 // ---------- 오류 알리기 ----------
@@ -1148,10 +1197,10 @@ function renderHeaderImages(list) {
     const tool = (label, title, action, disabled) => {
       const b = Object.assign(document.createElement("button"), { textContent: label, title, disabled });
       b.addEventListener("click", async () => {
-        if (action === "remove" && !confirm(`'${name}' 이미지를 뺄까요?`)) return;
+        if (action === "remove" && !await ask(`'${name}' 이미지를 뺄까요?`)) return;
         const r = await api("/api/header-image/change", { action, name });
         if (r.ok) renderHeaderImages(r.images);
-        else alert(r.message);
+        else tell(r.message);
       });
       return b;
     };
@@ -1165,7 +1214,7 @@ $("headerFile").addEventListener("change", async () => {
   for (const file of $("headerFile").files) {
     const r = await fetch("/api/header-image?name=" + encodeURIComponent(file.name), { method: "POST", body: file }).then((x) => x.json()).catch(() => ({ ok: false, message: "넣지 못했습니다." }));
     if (r.ok) renderHeaderImages(r.images);
-    else alert(`${file.name}: ${r.message}`);
+    else tell(`${file.name}: ${r.message}`);
   }
   $("headerFile").value = "";
 });
@@ -1192,7 +1241,7 @@ async function loadPosts() {
     li.addEventListener("click", async () => {
       for (const other of list.children) other.classList.toggle("on", other === li);
       const got = await api("/api/post?name=" + encodeURIComponent(post.name));
-      if (!got.ok) return alert(got.message);
+      if (!got.ok) return tell(got.message);
       $("postView").hidden = false;
       $("postTitle").textContent = post.title;
       $("postText").textContent = got.text;
@@ -1337,8 +1386,8 @@ function addSample(text = "") {
   area.value = text;
   area.placeholder = "네이버 블로그에서 내 글을 열고 Ctrl+A, Ctrl+C로 복사한 뒤 여기에 Ctrl+V로 붙여넣으세요.";
   area.addEventListener("input", renumberSamples);
-  remove.addEventListener("click", () => {
-    if (area.value.trim() && !confirm("이 예시 글을 뺄까요?")) return;
+  remove.addEventListener("click", async () => {
+    if (area.value.trim() && !await ask("이 예시 글을 뺄까요?")) return;
     box.remove();
     renumberSamples();
   });
@@ -1398,7 +1447,7 @@ function renderUsers() {
 async function changeUser(body) {
   const result = await api("/api/users", body);
   if (!result.ok) {
-    alert(result.message);
+    tell(result.message);
     renderUsers();
     return false;
   }
@@ -1412,9 +1461,9 @@ async function changeUser(body) {
 }
 
 async function newUser() {
-  const name = prompt("새 사용자 이름을 적어 주세요. (예: 블로그 주인 이름이나 가게 이름)");
+  const name = await askText("새 사용자 이름을 적어 주세요. (예: 블로그 주인 이름이나 가게 이름)");
   if (!name?.trim()) return renderUsers();
-  const copyApiKey = Boolean(config.apiKey) && confirm(`지금 사용자(${nowUser().name})의 API 키를 새 사용자도 같이 쓸까요?
+  const copyApiKey = Boolean(config.apiKey) && await ask(`지금 사용자(${nowUser().name})의 API 키를 새 사용자도 같이 쓸까요?
 
 [확인] 같이 씀 (사용료는 이 키 주인에게 나갑니다)
 [취소] 새 사용자가 자기 키를 따로 넣음`);
@@ -1427,12 +1476,12 @@ $("userSelect").addEventListener("change", () => {
   if (id !== users.current) changeUser({ action: "switch", id });
 });
 $("userAdd").addEventListener("click", newUser);
-$("userRename").addEventListener("click", () => {
-  const name = prompt("새 이름을 적어 주세요.", nowUser().name);
+$("userRename").addEventListener("click", async () => {
+  const name = await askText("새 이름을 적어 주세요.", nowUser().name);
   if (name?.trim()) changeUser({ action: "rename", id: users.current, name });
 });
-$("userRemove").addEventListener("click", () => {
-  if (!confirm(`'${nowUser().name}' 사용자를 지울까요?
+$("userRemove").addEventListener("click", async () => {
+  if (!await ask(`'${nowUser().name}' 사용자를 지울까요?
 이 사용자의 설정, 네이버 로그인, 이미 쓴 사진 기록, 말투 예시가 모두 지워집니다. 구글 드라이브의 사진과 블로그 글은 지워지지 않습니다.`)) return;
   changeUser({ action: "remove", id: users.current });
 });
@@ -1504,7 +1553,7 @@ $("footer").addEventListener("input", previewFooter);
 $("makeMapLine").addEventListener("click", () => {
   const name = $("mapName").value.trim().replace(/[,，]/g, " ");
   const addr = $("mapAddr").value.trim().replace(/[,，]/g, " ");
-  if (!name) return alert("가게 이름을 적어 주세요. (네이버 지도에 나오는 이름)");
+  if (!name) return tell("가게 이름을 적어 주세요. (네이버 지도에 나오는 이름)");
   const newLine = `지도: ${name}${addr ? `, ${addr}` : ""}`;
   const box = $("footer");
   const lines = box.value.split(/\r?\n/);
@@ -1525,7 +1574,7 @@ $("makeMapLine").addEventListener("click", () => {
 });
 
 $("loadFooterExample").addEventListener("click", async () => {
-  if ($("footer").value.trim() && !confirm("지금 적혀 있는 글 끝 내용을 예시로 바꿀까요?")) return;
+  if ($("footer").value.trim() && !await ask("지금 적혀 있는 글 끝 내용을 예시로 바꿀까요?")) return;
   const example = await api("/api/footer-example");
   if (!example.ok) return;
   $("footer").value = example.text;
@@ -1701,7 +1750,7 @@ async function stepReady(step) {
   if (step === 1) return checkKey();
   if (step === 2) {
     const found = await checkBlog();
-    if (found === "unknown") return confirm("블로그를 확인하지 못했습니다. 이 아이디가 맞으면 '확인'을 눌러 그대로 넘어가세요.");
+    if (found === "unknown") return await ask("블로그를 확인하지 못했습니다. 이 아이디가 맞으면 '확인'을 눌러 그대로 넘어가세요.");
     return found;
   }
   if (step === 3) {
@@ -1753,9 +1802,9 @@ $("checkUpdate").addEventListener("click", async () => {
   if (found) window.scrollTo(0, 0);
 });
 $("updateNow").addEventListener("click", async () => {
-  if (!confirm("업데이트하면 프로그램 창이 잠깐 닫혔다가 다시 열립니다.\n설정, 네이버 로그인, 말투 예시는 그대로 남습니다. 지금 업데이트할까요?")) return;
+  if (!await ask("업데이트하면 프로그램 창이 잠깐 닫혔다가 다시 열립니다.\n설정, 네이버 로그인, 말투 예시는 그대로 남습니다. 지금 업데이트할까요?")) return;
   const started = await api("/api/update", {});
-  if (!started.ok) return alert(started.message);
+  if (!started.ok) return tell(started.message);
   $("updateNow").disabled = true;
   $("updateLog").hidden = false;
   const poll = async () => {
