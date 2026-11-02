@@ -1,8 +1,10 @@
 ﻿# 다른 사람에게 줄 zip 만들기: 프로그램 파일만 골라 담고, API 키·말투 예시·개인 예시 파일·설치된 구성 요소(node_modules)는 넣지 않는다.
 # 설정, 네이버 로그인, 말투 예시는 원래 이 PC의 %LOCALAPPDATA%\BlogWriter 에 있어서 프로그램 폴더에는 없다.
+# 새 버전을 낼 때는 -OutFile <경로> -Quiet 로 바탕 화면이 아닌 곳에 만들고 창도 띄우지 않는다
+param([string]$OutFile = "", [switch]$Quiet)
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
-$zip = Join-Path ([Environment]::GetFolderPath("Desktop")) "블로그글생성기_나눠주기.zip"
+$zip = if ($OutFile) { $OutFile } else { Join-Path ([Environment]::GetFolderPath("Desktop")) "블로그글생성기_나눠주기.zip" }
 $stage = Join-Path $env:TEMP ("blogwriter-share-" + [guid]::NewGuid())
 $dest = Join-Path $stage "블로그글생성기"
 
@@ -42,10 +44,10 @@ try {
     Write-Host ""
     Write-Host "이 zip에는 프로그램만 들어 있고, 내 API 키, 내 설정, 네이버 로그인, 말투 예시는 들어 있지 않습니다."
     Write-Host "받은 사람은 압축을 풀고 '0_사용방법'을 보면서 자기 API 키와 블로그 아이디를 넣으면 됩니다."
-    Start-Process explorer.exe "/select,`"$zip`""
+    if (-not $Quiet) { Start-Process explorer.exe "/select,`"$zip`"" }
 } catch {
     Write-Host "`n문제가 생겼습니다: $($_.Exception.Message)" -ForegroundColor Red
 } finally {
     if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
 }
-Read-Host "`nEnter 키를 누르면 창이 닫힙니다"
+if (-not $Quiet) { Read-Host "`nEnter 키를 누르면 창이 닫힙니다" }
