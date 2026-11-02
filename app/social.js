@@ -85,9 +85,10 @@ async function ffmpegPath() {
   throw new Error("영상 만드는 도구(ffmpeg)가 설치되지 않았습니다. 인터넷이 연결된 상태에서 '1_설치'를 다시 실행해 주세요.");
 }
 
-// 사진 슬라이드 영상 (세로 1080x1920, 30fps, 소리 없음). 사진마다 천천히 다가가는 움직임과 자막을 넣는다.
-// slides: [{ file, caption }], title: 첫 화면 위쪽 제목, ending: 마지막 화면 문구. log: 진행 상황
-export async function shortsVideo(slides, { title, ending }, target, log = () => {}) {
+// 사진 슬라이드 영상 (세로 1080x1920, 30fps). 사진마다 천천히 다가가는 움직임과 자막을 넣는다.
+// slides: [{ file, caption }], title: 첫 화면 위쪽 제목, ending: 마지막 화면 문구,
+// music: 배경 음악 파일 (없으면 소리 없음. 영상보다 짧으면 반복, 끝은 서서히 줄인다). log: 진행 상황
+export async function shortsVideo(slides, { title, ending, music }, target, log = () => {}) {
   if (!slides.length) throw new Error("영상에 넣을 사진이 없습니다.");
   const ffmpeg = await ffmpegPath();
   // 사진이 많으면 한 장을 짧게 보여 줘서 영상이 40초를 넘지 않게 한다
@@ -107,8 +108,20 @@ export async function shortsVideo(slides, { title, ending }, target, log = () =>
       args.push("-loop", "1", "-framerate", String(FPS), "-t", String(part.seconds), "-i", `p${i}.jpg`, "-i", `t${i}.png`);
     }
     const total = parts.reduce((t, p) => t + p.seconds, 0) - FADE * (parts.length - 1);
-    args.push("-f", "lavfi", "-t", total.toFixed(2), "-i", "anullsrc=r=44100:cl=stereo");
+    if (music) {
+      // 한글 경로를 피하려고 작업 폴더에 복사해서 쓴다
+      const name = "music" + path.extname(music).toLowerCase();
+      fs.copyFileSync(music, path.join(work, name));
+      args.push("-stream_loop", "-1", "-i", name);
+    } else {
+      args.push("-f", "lavfi", "-t", total.toFixed(2), "-i", "anullsrc=r=44100:cl=stereo");
+    }
     const filters = [];
+    const audio = parts.length * 2;
+    if (music) {
+      const out = Math.max(0, total - 2).toFixed(2);
+      filters.push(`[${audio}:a]atrim=0:${total.toFixed(2)},asetpts=N/SR/TB,afade=t=in:st=0:d=0.5,afade=t=out:st=${out}:d=2,aformat=sample_rates=44100:channel_layouts=stereo[a]`);
+    }
     for (const [i, part] of parts.entries()) {
       const frames = Math.round(part.seconds * FPS);
       const zoom = part.end ? "1" : `1+0.08*on/${frames}`;
@@ -125,9 +138,9 @@ export async function shortsVideo(slides, { title, ending }, target, log = () =>
     }
     args.push(
       "-filter_complex", filters.join(";"),
-      "-map", `[${last}]`, "-map", `${parts.length * 2}:a`,
+      "-map", `[${last}]`, "-map", music ? "[a]" : `${audio}:a`,
       "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-r", String(FPS), "-pix_fmt", "yuv420p",
-      "-c:a", "aac", "-b:a", "96k", "-shortest", "-movflags", "+faststart", "out.mp4",
+      "-c:a", "aac", "-b:a", music ? "160k" : "96k", "-t", total.toFixed(2), "-movflags", "+faststart", "out.mp4",
     );
     log(`쇼츠 영상(${Math.round(total)}초)을 만드는 중... 30초~1분쯤 걸립니다.`);
     await run(ffmpeg, args, { cwd: work, timeout: 600000, maxBuffer: 16 * 1024 * 1024 }).catch((error) => {

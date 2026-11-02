@@ -342,6 +342,44 @@ ${samples.length ? "말투와 분량: 블로그 주인이 직접 쓴 예시 글�
   return { post, costWon: Math.round(usd * 1400), styleSamples: samples.length, checks };
 }
 
+// '지난 글'에서 인스타·쇼츠를 만들 때, 인스타그램 글과 쇼츠 글이 없는 글(예전 글, 인스타·쇼츠를 끄고 만든 글)은
+// 이미 쓴 블로그 글과 사진을 보여 주고 그것만 쓰게 한다. 사진은 작게 줄여 보내서 사용료가 블로그 글 하나보다 훨씬 적다
+export async function generateSocial(config, photos, blogText) {
+  const content = [];
+  for (const [i, file] of photos.entries()) {
+    if (isVideo(file)) continue;
+    const jpeg = await sharp(file, { failOn: "none" }).rotate().resize(800, 800, { fit: "inside", withoutEnlargement: true }).jpeg({ quality: 80 }).toBuffer();
+    content.push({ type: "text", text: `${i + 1}번 (사진):` }, { type: "image", source: { type: "base64", media_type: "image/jpeg", data: jpeg.toString("base64") } });
+  }
+  const about = config.blogAbout?.trim();
+  content.push({
+    type: "text",
+    text: `위 사진들로 블로그 주인이 아래 네이버 블로그 글을 올렸습니다.${about ? `\n블로그 소개: ${about}` : ""}
+<블로그 글>
+${blogText}
+</블로그 글>
+${SOCIAL_GUIDE.replace("이번에는 블로그 글과 함께 같은 사진으로", "같은 사진으로").replace("블로그 글과 같은 사람(예시 글이 있으면 그 말투)", "위 블로그 글과 같은 사람의 말투")}${standingRequests(config)}`,
+  });
+  const client = new Anthropic({ apiKey: config.apiKey });
+  const message = await client.beta.messages.create({
+    model: MODEL,
+    max_tokens: 8000,
+    messages: [{ role: "user", content }],
+    output_config: { effort: "low", format: { type: "json_schema", schema: { type: "object", properties: SOCIAL_SCHEMA, required: ["instagram", "shorts"], additionalProperties: false } } },
+    betas: ["server-side-fallback-2026-07-01"],
+    fallbacks: "default",
+  });
+  if (message.stop_reason === "refusal") throw new Error("AI가 이 사진으로는 글쓰기를 거절했습니다.");
+  const social = JSON.parse(message.content.find((b) => b.type === "text")?.text ?? "");
+  // 단어 바꾸기와 고정 해시태그는 블로그 글과 똑같이 적용한다
+  const post = { title: "", intro: "", sections: [], outro: "", hashtags: [], ...social };
+  applyStandingRequests(post, config);
+  const fixed = config.fixedHashtags.split(/[\s,#]+/).filter(Boolean);
+  post.instagram.hashtags = [...new Set([...fixed, ...post.instagram.hashtags.map((t) => t.replace(/^#/, "").replace(/\s+/g, ""))])].filter(Boolean);
+  const usd = (message.usage.input_tokens * 4 + message.usage.output_tokens * 20) / 1e6;
+  return { instagram: post.instagram, shorts: post.shorts, costWon: Math.round(usd * 1400) };
+}
+
 // 설정 '연결 확인': 키가 맞는지, 크레딧이 남았는지 아주 짧은 요청(1글자짜리 답)으로 확인한다. 사용료는 1원도 안 된다
 export async function checkApiKey(apiKey) {
   try {

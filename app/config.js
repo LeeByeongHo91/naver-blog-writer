@@ -30,6 +30,7 @@ export const DEFAULTS = {
   fixedHashtags: "",
   styleSamples: [], // 블로그 주인이 직접 쓴 글(네이버에서 복사한 그대로). 있으면 말투·길이 설정보다 우선
   headerImages: [], // 글 맨 위(제목 바로 아래)에 항상 넣을 이미지의 파일 이름. 파일은 userPaths().header 폴더에 있다
+  music: [], // 쇼츠 배경 음악 파일 이름 (영상마다 하나를 골라 쓴다). 파일은 userPaths().music 폴더에 있다
   footer: "", // 글 끝(마무리 글과 해시태그 사이)에 항상 붙일 내용. 주소만 있는 줄은 링크 카드, "지도:" 줄은 네이버 지도
   naverTemplate: "", // 네이버 글쓰기의 '내 템플릿' 이름. 있으면 글 맨 아래(해시태그 앞)에 그 템플릿을 넣는다
   replaceWords: [], // [{ from: "선생님", to: "사범님" }] AI에게 시키고, 다 쓴 글에서도 한 번 더 바꾼다
@@ -54,6 +55,7 @@ export function userPaths(id = currentUser().id) {
     posts: path.join(dir, "posts"), // 만든 글 백업
     usage: path.join(dir, "usage.json"), // AI 사용료 기록
     header: path.join(dir, "header-images"), // 글 맨 위에 항상 넣을 이미지 (설정에서 넣은 것을 복사해 둔다)
+    music: path.join(dir, "music"), // 쇼츠 영상 배경 음악 (설정에서 넣은 것을 복사해 둔다)
   };
 }
 
@@ -205,6 +207,17 @@ export function listPosts(id) {
       const extras = fs.existsSync(path.join(dir, name.replace(/\.txt$/, ""))); // 인스타·쇼츠 파일 폴더
       return { name, title: title || "(제목 없음)", date: m ? `${m[1]}.${Number(m[2])}.${Number(m[3])} ${m[4]}:${m[5]}` : "", extras };
     });
+}
+
+// 글을 다시 쓰지 않고 인스타·쇼츠를 다시 만들 수 있게, 글 내용(JSON)과 원래 사진 경로, 모자이크 자리를 같이 남긴다
+// (posts\<만든 시각>.json, 1.5.0부터. 그 전 글은 txt만 있다)
+export function savePostData(stamp, data, id) {
+  fs.writeFileSync(path.join(userPaths(id).posts, `${stamp}.json`), JSON.stringify(data), "utf8");
+}
+
+export function readPostData(stamp, id) {
+  const file = path.join(userPaths(id).posts, `${stamp}.json`);
+  return /^[\w-]+$/.test(stamp ?? "") && fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : null;
 }
 
 export function readPost(name, id) {
