@@ -734,6 +734,21 @@ function readBody(req) {
   });
 }
 
+// 이 프로그램 화면에서 온 요청만 받는다. 같은 PC에서 연 다른 웹사이트가 이 서버로 요청을 보내
+// 설정을 바꾸거나(사이트 간 요청 위조) 주소를 바꿔치기해서 API 키를 읽어 가는 것(DNS 리바인딩)을 막는다
+const OWN_HOSTS = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`]);
+function fromThisApp(req) {
+  if (!OWN_HOSTS.has(String(req.headers.host ?? "").toLowerCase())) return false;
+  // 브라우저는 다른 사이트에서 보낸 요청에 그 사이트 주소(Origin)를 붙인다. 붙어 있으면 이 프로그램 주소여야 한다
+  const origin = req.headers.origin;
+  if (origin && !OWN_HOSTS.has(origin.toLowerCase().replace(/^http:\/\//, ""))) return false;
+  // Origin이 없는 요청(주소창, 사진 불러오기 등)도 다른 사이트에서 보낸 것이면 브라우저가 Sec-Fetch-Site로 알려 준다.
+  // 보기만 하는 GET은 다른 사이트가 결과를 읽을 수 없어서 괜찮고, 무언가를 바꾸는 POST만 막는다
+  const site = req.headers["sec-fetch-site"];
+  if (req.method !== "GET" && site && !["same-origin", "none"].includes(site)) return false;
+  return true;
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const json = (data) => {
@@ -744,6 +759,10 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(404);
     res.end();
   };
+  if (!fromThisApp(req)) {
+    res.writeHead(403);
+    return res.end();
+  }
   try {
     if (req.method === "GET" && url.pathname === "/") {
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });

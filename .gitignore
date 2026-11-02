@@ -21,3 +21,6 @@ app/*
 stats-server/*
 !stats-server/Code.gs
 !stats-endpoint.txt
+!tools/
+tools/*
+!tools/sign.mjs

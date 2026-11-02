@@ -1,5 +1,6 @@
 // 새 버전 확인과 업데이트. GitHub에 새 버전(릴리스)이 올라오면 각자의 프로그램이 그 zip을 받아 프로그램 폴더의 파일을 바꾼다.
 // 설정, 네이버 로그인, 말투 예시는 %LOCALAPPDATA%\BlogWriter에 있어서 업데이트해도 그대로다.
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
@@ -8,6 +9,11 @@ import { DATA_DIR } from "./config.js";
 
 export const REPO = "LeeByeongHo91/naver-blog-writer";
 const ASSET = "blog-writer.zip"; // 릴리스에 붙이는 파일 (4_다른 사람에게 줄 파일 만들기로 만든 zip과 같은 내용)
+// 업데이트 파일의 서명을 확인하는 공개 열쇠. 서명은 프로그램을 만든 사람의 PC에만 있는 비밀 열쇠로 한다 (tools/sign.mjs).
+// 누가 GitHub 계정을 빼앗아 가짜 업데이트를 올려도 서명이 맞지 않으면 설치하지 않는다
+const PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEA9hGHco9DbEs/HJsFmfK7rC5yhfKdCDJ1h0ONl2WotZY=
+-----END PUBLIC KEY-----`;
 // 시험용: BLOGWRITER_UPDATE_API 로 GitHub 대신 다른 주소에서 최신 버전 정보를 읽는다
 const RELEASE_API = process.env.BLOGWRITER_UPDATE_API ?? `https://api.github.com/repos/${REPO}/releases/latest`;
 const PROGRAM_DIR = path.join(import.meta.dirname, "..");
@@ -37,9 +43,20 @@ export async function checkUpdate() {
     const release = await res.json();
     const version = String(release.tag_name ?? "").replace(/^v/, "");
     const asset = release.assets?.find((a) => a.name === ASSET);
-    latest = { current: VERSION, version, notes: release.body ?? "", url: asset?.browser_download_url, available: Boolean(asset) && isNewer(version, VERSION) };
+    const sig = release.assets?.find((a) => a.name === ASSET + ".sig");
+    latest = { current: VERSION, version, notes: release.body ?? "", url: asset?.browser_download_url, sigUrl: sig?.browser_download_url, available: Boolean(asset) && isNewer(version, VERSION) };
   } catch {}
   return latest;
+}
+
+// 서명이 없거나 맞지 않으면 아무것도 바꾸지 않고 멈춘다
+async function verify(data, sigUrl) {
+  const fake = new Error("받은 업데이트 파일이 프로그램을 만든 사람이 올린 것인지 확인되지 않아서 설치하지 않았습니다. 프로그램을 준 사람에게 알려 주세요.");
+  if (!sigUrl) throw fake;
+  const res = await fetch(sigUrl, { signal: AbortSignal.timeout(30000) });
+  if (!res.ok) throw new Error(`업데이트 확인 파일을 받지 못했습니다 (${res.status}). 인터넷 연결을 확인해 주세요.`);
+  const signature = Buffer.from((await res.text()).trim(), "base64");
+  if (!crypto.verify(null, data, crypto.createPublicKey(PUBLIC_KEY), signature)) throw fake;
 }
 
 function* walk(dir) {
@@ -63,8 +80,11 @@ export async function applyUpdate(log) {
   log(`새 버전 ${info.version}을 내려받는 중...`);
   const res = await fetch(info.url, { signal: AbortSignal.timeout(180000) });
   if (!res.ok) throw new Error(`새 버전을 내려받지 못했습니다 (${res.status}). 인터넷 연결을 확인해 주세요.`);
+  const data = Buffer.from(await res.arrayBuffer());
+  log("받은 파일이 진짜인지 확인하는 중...");
+  await verify(data, info.sigUrl);
   const zip = path.join(work, ASSET);
-  fs.writeFileSync(zip, Buffer.from(await res.arrayBuffer()));
+  fs.writeFileSync(zip, data);
 
   log("압축을 푸는 중...");
   const out = path.join(work, "files");
