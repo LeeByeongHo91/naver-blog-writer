@@ -15,6 +15,11 @@ app/*
 !app/*.ps1
 !app/icon.ico
 !app/*.onnx
+!app/music/
+app/music/*
+!app/music/*.mp3
+!app/music/catalog.json
+!app/music/출처.txt
 !app/package.json
 !app/package-lock.json
 !stats-server/

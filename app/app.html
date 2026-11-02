@@ -206,6 +206,10 @@
   .music-list .music span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
   .music-list audio { height: 34px; width: 300px; max-width: 45%; }
   .music-list .empty { color: var(--muted); font-size: 14px; padding: 6px 0; }
+  .music-list label.music { margin: 0; font-weight: normal; cursor: pointer; }
+  .music-list label.music:has(input:checked) { border-color: var(--green); background: var(--green-soft); }
+  .music-list .music .mood { flex: none; font-size: 12px; padding: 1px 8px; border-radius: 10px; background: #fff; border: 1px solid var(--line); color: var(--muted); }
+  h3.sub { font-size: 15px; margin: 14px 0 6px; }
 
   /* 지난 글 */
   .post-list { list-style: none; margin: 0; padding: 0; }
@@ -421,7 +425,7 @@
     <p class="hint">파일은 '지난 글' 폴더 안 이 글의 폴더에 저장돼 있습니다. 올리기는 평소 쓰는 브라우저에서 직접 합니다.<br>
       <b>인스타그램</b>: '인스타그램 열기' → 왼쪽 '만들기' → 폴더의 인스타_01~ 사진을 한꺼번에 골라 올리고, 복사한 글을 붙여넣기.<br>
       <b>유튜브 쇼츠</b>: '유튜브 스튜디오 열기' → 오른쪽 위 '만들기' → '동영상 업로드' → 쇼츠.mp4 (세로 영상이라 저절로 쇼츠가 됩니다). 같은 영상을 인스타그램 릴스로 올려도 됩니다.<br>
-      배경 음악은 설정 → 고급 설정 → 9번에 넣어 두면 영상에 깔립니다. 없으면 올릴 때 인스타그램·유튜브에서 고르면 됩니다.</p>
+      배경 음악은 설정 → 고급 설정 → 9번에서 무료 기본 음악에 체크하면 영상에 깔립니다.</p>
     <div class="social-grid">
       <div>
         <h3>인스타그램 <small class="s-count"></small></h3>
@@ -707,8 +711,12 @@ https://www.youtube.com/@..."></textarea>
 
   <div class="card">
     <h2>9. 쇼츠 배경 음악</h2>
-    <p class="hint">여기에 음악 파일을 넣어 두면 쇼츠 영상에 깔립니다. 여러 곡을 넣으면 영상마다 하나를 골라 씁니다. 영상보다 짧은 곡은 반복되고, 끝은 서서히 작아집니다. 비워 두면 소리 없는 영상을 만듭니다.<br>
-      <b>저작권에 주의하세요.</b> 유튜브 스튜디오 왼쪽 메뉴 <b>"오디오 보관함"</b>의 무료 음악처럼 마음대로 써도 되는 곡만 넣으세요. 가요·드라마 음악을 넣으면 영상이 막히거나 소리가 꺼질 수 있습니다.</p>
+    <p class="hint">아래에서 고른 곡(여러 곡이면 영상마다 하나씩)이 쇼츠 영상에 깔립니다. 끝은 서서히 작아집니다. 하나도 안 고르면 소리 없는 영상을 만듭니다.</p>
+    <h3 class="sub">🎁 무료 기본 음악 <small>(저작권 걱정 없음 · 들어 보고 체크하세요)</small></h3>
+    <div id="builtinMusic" class="music-list"></div>
+    <p class="hint" style="margin-top:-4px">HoliznaCC0가 저작권을 포기하고(CC0) 공개한 곡이라 유튜브·인스타그램 어디에 올려도 되고, 출처를 적지 않아도 됩니다.</p>
+    <h3 class="sub">📁 내가 넣은 음악</h3>
+    <p class="hint"><b>저작권에 주의하세요.</b> 마음대로 써도 되는 곡만 넣으세요. 가요·드라마 음악을 넣으면 영상이 막히거나 소리가 꺼질 수 있습니다.</p>
     <div id="musicList" class="music-list"></div>
     <button id="addMusic" class="small">+ 음악 추가</button>
     <input type="file" id="musicFile" accept=".mp3,.m4a,.aac,.wav,.ogg,audio/*" multiple hidden>
@@ -1508,11 +1516,31 @@ $("headerFile").addEventListener("change", async () => {
 });
 
 // ---------- 쇼츠 배경 음악 ----------
+// 프로그램에 들어 있는 무료 음악: 체크하면 바로 저장한다
+function renderBuiltinMusic(catalog) {
+  const box = $("builtinMusic");
+  box.textContent = "";
+  for (const item of catalog) {
+    const row = Object.assign(document.createElement("label"), { className: "music" });
+    const check = Object.assign(document.createElement("input"), { type: "checkbox", checked: (config.musicBuiltIn ?? []).includes(item.id) });
+    check.addEventListener("change", () => {
+      const chosen = new Set(config.musicBuiltIn ?? []);
+      if (check.checked) chosen.add(item.id);
+      else chosen.delete(item.id);
+      config.musicBuiltIn = catalog.map((m) => m.id).filter((id) => chosen.has(id));
+      api("/api/config", { musicBuiltIn: config.musicBuiltIn });
+    });
+    const audio = Object.assign(document.createElement("audio"), { controls: true, preload: "none", src: "/api/music-file?builtin=" + encodeURIComponent(item.id) });
+    row.append(check, Object.assign(document.createElement("span"), { className: "mood", textContent: item.mood }), Object.assign(document.createElement("span"), { textContent: item.title }), audio);
+    box.append(row);
+  }
+}
+
 function renderMusic(list) {
   config.music = list;
   const box = $("musicList");
   box.textContent = "";
-  if (!list.length) box.append(Object.assign(document.createElement("div"), { className: "empty", textContent: "넣은 음악이 없습니다. 쇼츠 영상은 소리 없이 만듭니다." }));
+  if (!list.length) box.append(Object.assign(document.createElement("div"), { className: "empty", textContent: "직접 넣은 음악이 없습니다." }));
   for (const name of list) {
     const row = Object.assign(document.createElement("div"), { className: "music" });
     const audio = Object.assign(document.createElement("audio"), { controls: true, preload: "none", src: "/api/music-file?name=" + encodeURIComponent(name) });
@@ -2151,7 +2179,8 @@ $("updateNow").addEventListener("click", async () => {
   // 고급 설정은 이미 뭔가 적어 둔 사람에게만 펼쳐 둔다
   renderHeaderImages(config.headerImages ?? []);
   renderMusic(config.music ?? []);
-  $("advanced").open = Boolean(config.headerImages?.length || config.music?.length || config.footer?.trim() || config.naverTemplate?.trim() || config.replaceWords?.length || config.repeatPhrases?.length || config.aiRequests?.trim());
+  renderBuiltinMusic(data.musicCatalog ?? []);
+  $("advanced").open = Boolean(config.headerImages?.length || config.music?.length || config.musicBuiltIn?.length || config.footer?.trim() || config.naverTemplate?.trim() || config.replaceWords?.length || config.repeatPhrases?.length || config.aiRequests?.trim());
   const ready = config.apiKey && config.blogId && config.photoFolder;
   $("setupNotice").hidden = ready;
   if (!ready) startWizard(!config.apiKey ? 1 : !config.blogId ? 2 : 3);

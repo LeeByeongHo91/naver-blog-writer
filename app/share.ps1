@@ -21,6 +21,12 @@ try {
     Get-ChildItem -LiteralPath (Join-Path $root "app") -File |
         Where-Object { $_.Extension -in ".js", ".html", ".json", ".ps1", ".ico", ".onnx" } |
         Copy-Item -Destination (Join-Path $dest "app")
+    # 무료 기본 음악 (CC0)
+    $music = Join-Path $root "app\music"
+    if (Test-Path -LiteralPath $music) {
+        New-Item -ItemType Directory -Force (Join-Path $dest "app\music") | Out-Null
+        Get-ChildItem -LiteralPath $music -File | Where-Object { $_.Extension -in ".mp3", ".json", ".txt" } | Copy-Item -Destination (Join-Path $dest "app\music")
+    }
 
     # 혹시라도 API 키가 섞여 들어갔으면 만들지 않는다
     $leak = Get-ChildItem -LiteralPath $dest -Recurse -File | Select-String -Pattern "sk-ant-[A-Za-z0-9_-]{20,}" -List

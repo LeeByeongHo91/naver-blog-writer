@@ -31,6 +31,7 @@ export const DEFAULTS = {
   styleSamples: [], // 블로그 주인이 직접 쓴 글(네이버에서 복사한 그대로). 있으면 말투·길이 설정보다 우선
   headerImages: [], // 글 맨 위(제목 바로 아래)에 항상 넣을 이미지의 파일 이름. 파일은 userPaths().header 폴더에 있다
   music: [], // 쇼츠 배경 음악 파일 이름 (영상마다 하나를 골라 쓴다). 파일은 userPaths().music 폴더에 있다
+  musicBuiltIn: [], // 프로그램에 들어 있는 무료 음악(app/music/catalog.json) 중 고른 곡의 id. 직접 넣은 곡과 섞어서 고른다
   footer: "", // 글 끝(마무리 글과 해시태그 사이)에 항상 붙일 내용. 주소만 있는 줄은 링크 카드, "지도:" 줄은 네이버 지도
   naverTemplate: "", // 네이버 글쓰기의 '내 템플릿' 이름. 있으면 글 맨 아래(해시태그 앞)에 그 템플릿을 넣는다
   replaceWords: [], // [{ from: "선생님", to: "사범님" }] AI에게 시키고, 다 쓴 글에서도 한 번 더 바꾼다

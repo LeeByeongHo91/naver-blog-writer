@@ -652,9 +652,27 @@ function changeUserFile(kind, { action, name }) {
   return { ok: true, list };
 }
 
-// 쇼츠에 깔 배경 음악 하나 (넣어 둔 것 중 아무거나. 없으면 null)
+// 프로그램에 들어 있는 무료 음악 (CC0, app/music/catalog.json)
+const BUILTIN_MUSIC = path.join(here, "music");
+function musicCatalog() {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(BUILTIN_MUSIC, "catalog.json"), "utf8"));
+  } catch {
+    return [];
+  }
+}
+const builtinMusicFile = (id) => {
+  const item = musicCatalog().find((m) => m.id === id);
+  const file = item && path.join(BUILTIN_MUSIC, item.file);
+  return file && fs.existsSync(file) ? file : null;
+};
+
+// 쇼츠에 깔 배경 음악 하나 (직접 넣은 곡과 고른 무료 음악 중 아무거나. 없으면 null)
 function pickMusic(config, userId) {
-  const files = (config.music ?? []).map((name) => userFile("music", name, userId)).filter(Boolean);
+  const files = [
+    ...(config.music ?? []).map((name) => userFile("music", name, userId)),
+    ...(config.musicBuiltIn ?? []).map(builtinMusicFile),
+  ].filter(Boolean);
   return files.length ? files[Math.floor(Math.random() * files.length)] : null;
 }
 
@@ -771,7 +789,7 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { "Content-Type": "image/x-icon" });
       res.end(fs.readFileSync(path.join(here, "icon.ico")));
     } else if (req.method === "GET" && url.pathname === "/api/config") {
-      json({ config: loadConfig(), users: loadUsers(), driveGuess: guessDriveFolder(), maxPhotos: MAX_PHOTOS });
+      json({ config: loadConfig(), users: loadUsers(), driveGuess: guessDriveFolder(), maxPhotos: MAX_PHOTOS, musicCatalog: musicCatalog() });
     } else if (req.method === "POST" && url.pathname === "/api/config") {
       saveConfig({ ...loadConfig(), ...(await readBody(req)) });
       json({ ok: true });
@@ -877,7 +895,7 @@ const server = http.createServer(async (req, res) => {
       json(changeUserFile(url.searchParams.get("kind"), await readBody(req)));
     } else if (req.method === "GET" && url.pathname === "/api/music-file") {
       // 설정에서 미리 들어 보기
-      const file = userFile("music", url.searchParams.get("name"));
+      const file = url.searchParams.get("builtin") ? builtinMusicFile(url.searchParams.get("builtin")) : userFile("music", url.searchParams.get("name"));
       if (!file) return notFound();
       const type = { ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".aac": "audio/aac", ".wav": "audio/wav", ".ogg": "audio/ogg" }[path.extname(file).toLowerCase()];
       res.writeHead(200, { "Content-Type": type, "Content-Length": fs.statSync(file).size });
