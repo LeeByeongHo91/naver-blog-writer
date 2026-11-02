@@ -18,6 +18,7 @@ import { openEditor, writeDraft, screenshot } from "./naver.js";
 import { findFaces, mosaic } from "./faces.js";
 import { instagramPhotos, shortsVideo } from "./social.js";
 import { report, statsEnabled, setStatsEnabled } from "./stats.js";
+import { speak } from "./voice.js";
 
 const here = import.meta.dirname;
 // 시험용: BLOGWRITER_PORT 로 다른 포트에 띄운다 (진짜 프로그램이 켜져 있어도 시험할 수 있게)
@@ -309,7 +310,7 @@ async function makeSocial(post, files, { userId, config, stamp, log }) {
   const captionOf = new Map(post.shorts.captions.map((c) => [c.photo, c.text]));
   const music = pickMusic(config, userId);
   if (music) log(`배경 음악: ${path.basename(music)}`);
-  const video = await shortsVideo(photos.map((x) => ({ file: x.file, caption: captionOf.get(x.n) ?? "" })), { title, ending, music }, path.join(dir, "쇼츠.mp4"), log);
+  const video = await shortsVideo(photos.map((x) => ({ file: x.file, caption: captionOf.get(x.n) ?? "" })), { title, ending, music, narrate: config.shortsVoice }, path.join(dir, "쇼츠.mp4"), log);
   log(`인스타 사진 ${instagram.length}장과 쇼츠 영상(${video.seconds}초)을 만들었습니다. 아래 '인스타·쇼츠'에서 글을 복사하고 파일을 올려 주세요.`);
   return postSocial(stamp, userId);
 }
@@ -893,6 +894,22 @@ const server = http.createServer(async (req, res) => {
       json(await addUserFile(req, url.searchParams.get("kind"), url.searchParams.get("name")));
     } else if (req.method === "POST" && url.pathname === "/api/user-file/change") {
       json(changeUserFile(url.searchParams.get("kind"), await readBody(req)));
+    } else if (req.method === "GET" && url.pathname === "/api/voice-preview") {
+      // 설정에서 AI 목소리 들어 보기 (한 번 만든 것을 다시 쓴다)
+      const file = path.join(DATA_DIR, "voice-preview.wav");
+      if (!fs.existsSync(file)) {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "blogwriter-voice-"));
+        try {
+          const [made] = await speak(["안녕하세요. 쇼츠 영상의 자막을 이런 목소리로 읽어 드려요."], dir);
+          fs.copyFileSync(path.join(dir, made), file);
+        } catch (error) {
+          return json({ ok: false, message: error.message });
+        } finally {
+          fs.rmSync(dir, { recursive: true, force: true });
+        }
+      }
+      res.writeHead(200, { "Content-Type": "audio/wav", "Content-Length": fs.statSync(file).size });
+      fs.createReadStream(file).pipe(res);
     } else if (req.method === "GET" && url.pathname === "/api/music-file") {
       // 설정에서 미리 들어 보기
       const file = url.searchParams.get("builtin") ? builtinMusicFile(url.searchParams.get("builtin")) : userFile("music", url.searchParams.get("name"));

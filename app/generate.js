@@ -210,6 +210,11 @@ const SOCIAL_GUIDE = `
 - shorts.captions: 동영상을 뺀 사진 번호마다 하나씩, 사진 번호 순서대로. 화면에 크게 뜨는 자막이라 18자 이내로 짧게, 이모지 없이. 그 사진에 보이는 장면과 맞아야 하고, 첫 사진 자막은 다음 장면이 궁금해지는 한 줄로 씁니다.
 - shorts.ending: 영상 마지막 화면 문구 20자 이내, 이모지 없이 (예: 더 많은 이야기는 블로그에서).`;
 
+// 쇼츠에 AI 목소리를 켰으면 자막을 소리 내 읽으므로, 짧은 표어 대신 말하듯 자연스러운 한 문장으로 쓰게 한다
+const VOICE_GUIDE = `
+- 이 영상은 AI 목소리가 shorts.captions와 shorts.ending을 그대로 소리 내 읽습니다. 그래서 자막은 18자 제한 대신, 블로그 주인이 직접 말하듯 자연스러운 한 문장(35자 이내, "~했어요"처럼 끝맺음)으로 씁니다. 읽기 어려운 기호, 영어 약자, 괄호는 쓰지 않고 숫자는 읽는 그대로 써도 됩니다.`;
+const socialGuide = (config) => SOCIAL_GUIDE + (config.shortsVoice ? VOICE_GUIDE : "");
+
 export function sortFiles(files, order) {
   if (order === "name") return files.sort((a, b) => a.localeCompare(b, "ko", { numeric: true }));
   const time = new Map(files.map((f) => [f, fs.statSync(f).mtimeMs]));
@@ -308,7 +313,7 @@ ${samples.length ? "말투와 분량: 블로그 주인이 직접 쓴 예시 글�
       config.naverTemplate?.trim()
         ? "\n\n글 맨 아래에는 블로그 주인이 네이버에 저장해 둔 고정 템플릿(가게·도장 소개, 시간표, 지도, 톡톡·유튜브·인스타그램 안내 등)이 자동으로 붙습니다. 그런 고정 안내는 마무리 글에 쓰지 마세요."
         : ""
-    }${social ? SOCIAL_GUIDE : ""}${standingRequests(config)}${revise ? revision(revise) : ""}`,
+    }${social ? socialGuide(config) : ""}${standingRequests(config)}${revise ? revision(revise) : ""}`,
   });
 
   const client = new Anthropic({ apiKey: config.apiKey });
@@ -358,7 +363,7 @@ export async function generateSocial(config, photos, blogText) {
 <블로그 글>
 ${blogText}
 </블로그 글>
-${SOCIAL_GUIDE.replace("이번에는 블로그 글과 함께 같은 사진으로", "같은 사진으로").replace("블로그 글과 같은 사람(예시 글이 있으면 그 말투)", "위 블로그 글과 같은 사람의 말투")}${standingRequests(config)}`,
+${socialGuide(config).replace("이번에는 블로그 글과 함께 같은 사진으로", "같은 사진으로").replace("블로그 글과 같은 사람(예시 글이 있으면 그 말투)", "위 블로그 글과 같은 사람의 말투")}${standingRequests(config)}`,
   });
   const client = new Anthropic({ apiKey: config.apiKey });
   const message = await client.beta.messages.create({

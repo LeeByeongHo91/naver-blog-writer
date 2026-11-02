@@ -7,6 +7,7 @@ import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
 import { promisify } from "node:util";
 import sharp from "sharp";
+import { speak, wavSeconds } from "./voice.js";
 
 const run = promisify(execFile);
 const require = createRequire(import.meta.url);
@@ -16,6 +17,7 @@ const FONT_FILE = ["malgunbd.ttf", "malgun.ttf"].map((n) => path.join(FONT_DIR, 
 const W = 1080, H = 1920; // 쇼츠 화면
 const FPS = 30;
 const FADE = 0.4; // 사진이 바뀔 때 겹치는 시간(초)
+const VOICE_LEAD = 0.35; // 화면이 바뀌고 목소리가 나오기까지 (초)
 
 // 사진 한 장을 지정한 크기에 맞춘다. 비율이 비슷하면 꽉 채우고(조금 잘림), 많이 다르면 흐리게 늘린 같은 사진 위에 전체를 올린다
 async function fitFrame(file, width, height, box = { width, height }) {
@@ -87,8 +89,9 @@ async function ffmpegPath() {
 
 // 사진 슬라이드 영상 (세로 1080x1920, 30fps). 사진마다 천천히 다가가는 움직임과 자막을 넣는다.
 // slides: [{ file, caption }], title: 첫 화면 위쪽 제목, ending: 마지막 화면 문구,
-// music: 배경 음악 파일 (없으면 소리 없음. 영상보다 짧으면 반복, 끝은 서서히 줄인다). log: 진행 상황
-export async function shortsVideo(slides, { title, ending, music }, target, log = () => {}) {
+// music: 배경 음악 파일 (없으면 소리 없음. 영상보다 짧으면 반복, 끝은 서서히 줄인다),
+// narrate: AI 목소리로 자막(과 마지막 화면 문구)을 읽는다. log: 진행 상황
+export async function shortsVideo(slides, { title, ending, music, narrate }, target, log = () => {}) {
   if (!slides.length) throw new Error("영상에 넣을 사진이 없습니다.");
   const ffmpeg = await ffmpegPath();
   // 사진이 많으면 한 장을 짧게 보여 줘서 영상이 40초를 넘지 않게 한다
@@ -97,6 +100,20 @@ export async function shortsVideo(slides, { title, ending, music }, target, log 
   try {
     const parts = slides.map((s, i) => ({ ...s, title: i === 0 ? title : "", seconds: each }));
     if (plain(ending)) parts.push({ file: slides.at(-1).file, caption: ending, center: true, end: true, seconds: 2.2 });
+    // AI 목소리: 화면마다 자막을 읽고, 그 화면은 다 읽을 때까지 보여 준다
+    if (narrate) {
+      log("AI 목소리로 자막을 읽는 중...");
+      // 목소리를 못 만들어도(한국어 음성이 없는 PC 등) 영상은 목소리 없이 만든다
+      const wavs = await speak(parts.map((p) => plain(p.caption)), work).catch((error) => {
+        log(`[확인 필요] ${error.message} 이번 영상은 목소리 없이 만듭니다.`);
+        return [];
+      });
+      for (const [i, part] of parts.entries()) {
+        if (!wavs[i]) continue;
+        part.voice = wavs[i];
+        part.seconds = Math.max(part.seconds, VOICE_LEAD + wavSeconds(path.join(work, wavs[i])) + 0.5);
+      }
+    }
     log(`쇼츠 영상 화면 ${parts.length}개를 그리는 중...`);
     const args = ["-y", "-hide_banner", "-loglevel", "error"];
     for (const [i, part] of parts.entries()) {
@@ -108,20 +125,34 @@ export async function shortsVideo(slides, { title, ending, music }, target, log 
       args.push("-loop", "1", "-framerate", String(FPS), "-t", String(part.seconds), "-i", `p${i}.jpg`, "-i", `t${i}.png`);
     }
     const total = parts.reduce((t, p) => t + p.seconds, 0) - FADE * (parts.length - 1);
+    const T = total.toFixed(2);
+    // 소리: 배경 음악(목소리가 있으면 작게) + 화면마다 그 화면이 시작할 때 읽는 목소리. 둘 다 없으면 소리 없음
+    const filters = [];
+    const sounds = [];
+    let input = parts.length * 2;
+    const stereo = "aformat=sample_rates=44100:channel_layouts=stereo";
+    const hasVoice = parts.some((p) => p.voice);
     if (music) {
       // 한글 경로를 피하려고 작업 폴더에 복사해서 쓴다
       const name = "music" + path.extname(music).toLowerCase();
       fs.copyFileSync(music, path.join(work, name));
       args.push("-stream_loop", "-1", "-i", name);
-    } else {
-      args.push("-f", "lavfi", "-t", total.toFixed(2), "-i", "anullsrc=r=44100:cl=stereo");
+      filters.push(`[${input++}:a]atrim=0:${T},asetpts=N/SR/TB,volume=${hasVoice ? 0.22 : 1},afade=t=in:st=0:d=0.5,afade=t=out:st=${Math.max(0, total - 2).toFixed(2)}:d=2,${stereo}[mus]`);
+      sounds.push("[mus]");
     }
-    const filters = [];
-    const audio = parts.length * 2;
-    if (music) {
-      const out = Math.max(0, total - 2).toFixed(2);
-      filters.push(`[${audio}:a]atrim=0:${total.toFixed(2)},asetpts=N/SR/TB,afade=t=in:st=0:d=0.5,afade=t=out:st=${out}:d=2,aformat=sample_rates=44100:channel_layouts=stereo[a]`);
+    let start = 0;
+    for (const [i, part] of parts.entries()) {
+      if (part.voice) {
+        args.push("-i", part.voice);
+        const ms = Math.round((start + VOICE_LEAD) * 1000);
+        filters.push(`[${input++}:a]${stereo},volume=1.6,adelay=${ms}|${ms}[v${i}]`);
+        sounds.push(`[v${i}]`);
+      }
+      start += part.seconds - FADE;
     }
+    if (sounds.length) filters.push(`${sounds.join("")}amix=inputs=${sounds.length}:normalize=0:duration=longest,apad,atrim=0:${T}[a]`);
+    else args.push("-f", "lavfi", "-t", T, "-i", "anullsrc=r=44100:cl=stereo");
+    const silence = input;
     for (const [i, part] of parts.entries()) {
       const frames = Math.round(part.seconds * FPS);
       const zoom = part.end ? "1" : `1+0.08*on/${frames}`;
@@ -138,9 +169,9 @@ export async function shortsVideo(slides, { title, ending, music }, target, log 
     }
     args.push(
       "-filter_complex", filters.join(";"),
-      "-map", `[${last}]`, "-map", music ? "[a]" : `${audio}:a`,
+      "-map", `[${last}]`, "-map", sounds.length ? "[a]" : `${silence}:a`,
       "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-r", String(FPS), "-pix_fmt", "yuv420p",
-      "-c:a", "aac", "-b:a", music ? "160k" : "96k", "-t", total.toFixed(2), "-movflags", "+faststart", "out.mp4",
+      "-c:a", "aac", "-b:a", sounds.length ? "160k" : "96k", "-t", T, "-movflags", "+faststart", "out.mp4",
     );
     log(`쇼츠 영상(${Math.round(total)}초)을 만드는 중... 30초~1분쯤 걸립니다.`);
     await run(ffmpeg, args, { cwd: work, timeout: 600000, maxBuffer: 16 * 1024 * 1024 }).catch((error) => {
