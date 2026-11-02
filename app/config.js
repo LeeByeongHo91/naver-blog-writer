@@ -20,6 +20,8 @@ export const DEFAULTS = {
   order: "name", // name | oldest | newest
   askEachTime: true,
   reviewFirst: true, // AI가 쓴 글을 네이버에 넣기 전에 화면에서 먼저 보고 고친다
+  social: true, // 인스타그램 사진·글과 쇼츠 영상도 같이 만든다
+  mosaic: false, // 사진 속 얼굴을 찾아 모자이크한다 (블로그·인스타·쇼츠 모두)
   blogAbout: "", // 어떤 블로그이고 누가 읽는지. AI가 글의 관점과 독자를 정할 때 쓴다
   topic: "",
   memo: "",
@@ -200,7 +202,8 @@ export function listPosts(id) {
     .map((name) => {
       const m = name.match(/^(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})/);
       const title = fs.readFileSync(path.join(dir, name), "utf8").split(/\r?\n/)[0].trim();
-      return { name, title: title || "(제목 없음)", date: m ? `${m[1]}.${Number(m[2])}.${Number(m[3])} ${m[4]}:${m[5]}` : "" };
+      const extras = fs.existsSync(path.join(dir, name.replace(/\.txt$/, ""))); // 인스타·쇼츠 파일 폴더
+      return { name, title: title || "(제목 없음)", date: m ? `${m[1]}.${Number(m[2])}.${Number(m[3])} ${m[4]}:${m[5]}` : "", extras };
     });
 }
 

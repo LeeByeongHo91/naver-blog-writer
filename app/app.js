@@ -15,6 +15,9 @@ import { generatePost, explainError, toBlocks, sortFiles, FORMATS, checkApiKey }
 import { isBlogId, recentPosts, postText } from "./blog.js";
 import { VERSION, checkUpdate, updateInfo, applyUpdate } from "./update.js";
 import { openEditor, writeDraft, screenshot } from "./naver.js";
+import { findFaces, mosaic } from "./faces.js";
+import { instagramPhotos, shortsVideo } from "./social.js";
+import { report, statsEnabled, setStatsEnabled } from "./stats.js";
 
 const here = import.meta.dirname;
 const PORT = 47813;
@@ -25,6 +28,8 @@ const DRY_RUN = process.env.BLOGWRITER_DRY_RUN === "1";
 // 시험용: BLOGWRITER_NO_WINDOW=1 이면 프로그램 창을 띄우지 않고, /api/quit 으로 끝낼 수 있다
 const NO_WINDOW = process.env.BLOGWRITER_NO_WINDOW === "1";
 const AFTER_UPDATE = process.argv.includes("--after-update");
+// 시험용: BLOGWRITER_NO_NAVER=1 이면 네이버 글쓰기 창을 열지 않고 그 단계를 건너뛴다 (인스타·쇼츠 만들기 시험)
+const NO_NAVER = process.env.BLOGWRITER_NO_NAVER === "1";
 
 // ---------- 폴더 고르기 (설정 화면) ----------
 
@@ -132,7 +137,8 @@ function sendVideo(req, res, file) {
 }
 
 // ---------- 글 만들기 ----------
-// 흐름: AI가 글 쓰기(ai) → [미리 보기를 켰으면] 사용자가 읽고 고치기(review) → 네이버에 입력(naver) → 끝(done) / 문제(error)
+// 흐름: [모자이크를 켰으면 얼굴 찾기] → AI가 글 쓰기(ai) → [미리 보기를 켰으면] 사용자가 읽고 고치기(review)
+//   → 네이버에 입력(naver) → [켰으면] 인스타·쇼츠 파일 만들기(social) → 끝(done) / 문제(error)
 
 const job = { running: false, step: "", logs: [], progress: 0, startedAt: 0, result: null, error: "", shot: "", draft: null, draftId: 0 };
 let pending = null; // 미리 보기 중인 글을 네이버에 넣거나 다시 쓸 때 필요한 것들 (사용자, 설정, 사진 등)
@@ -201,6 +207,7 @@ async function write(revise) {
       notes: p.notes,
       format: p.format,
       revise,
+      social: p.social,
       onProgress: (chars) => (job.progress = chars),
     });
     recordUsage(costWon, revise ? "rewrite" : "new", p.userId);
@@ -208,7 +215,7 @@ async function write(revise) {
     log(`${revise ? "다시 쓴 글" : "글 완성"}: "${post.title}" (사용료 약 ${costWon}원${styleSamples ? `, 말투 예시 ${styleSamples}편 참고` : ""})`);
     if (checks.length) log(checks.map((c) => "· " + c).join("\n"));
     if (p.review) {
-      Object.assign(job, { step: "review", draft: { post, checks }, draftId: job.draftId + 1 });
+      Object.assign(job, { step: "review", draft: { post, checks, faces: p.mosaic ? p.faces : null }, draftId: job.draftId + 1 });
       log("글이 완성됐습니다. 아래 '글 확인'에서 읽어 보고, 고칠 곳은 고친 뒤 '이대로 네이버에 넣기'를 눌러 주세요.");
       return;
     }
@@ -224,16 +231,26 @@ async function write(revise) {
 // 다 된 글을 네이버 글쓰기 화면에 넣고 임시저장한다
 async function toNaver(post) {
   const p = pending;
-  const blocks = toBlocks(post, p.files, p.config.footer, { keepOrder: !FORMATS[p.format].freeOrder });
+  // 모자이크를 켰으면 얼굴을 가린 사진을 블로그·인스타·쇼츠에 쓴다
+  let files = p.files;
+  if (p.mosaic) {
+    files = [];
+    for (const [i, file] of p.files.entries()) files.push(await mosaic(file, p.faces[i]));
+    files.forEach((f, i) => p.names.set(f, path.basename(p.originals[i])));
+    const count = p.faces.reduce((t, list) => t + list.length, 0);
+    log(count ? `얼굴 ${count}곳을 모자이크한 사진을 씁니다.` : "모자이크할 얼굴이 없어서 원래 사진을 씁니다.");
+  }
+  const blocks = toBlocks(post, files, p.config.footer, { keepOrder: !FORMATS[p.format].freeOrder });
   // 설정 '글 맨 위에 항상 넣을 이미지'는 제목 바로 아래, 도입 글 앞에 넣는다
   const header = await headerImagesFor(p.config, p.userId);
   if (header.length) blocks.unshift(...header.map((file) => ({ type: "photo", file })), { type: "blank" });
   for (const [i, file] of header.entries()) p.names.set(file, `맨 위 이미지: ${p.config.headerImages[i]}`);
   const backup = backupPost(post.title, blocks, p.userId, p.names);
   job.step = "naver";
-  log("네이버 글쓰기 화면을 엽니다. 입력이 끝날 때까지 그 브라우저 창을 건드리지 말아 주세요.");
-  let failed;
-  try {
+  let failed = [];
+  if (NO_NAVER) log("(시험) 네이버 입력은 건너뜁니다.");
+  else try {
+    log("네이버 글쓰기 화면을 엽니다. 입력이 끝날 때까지 그 브라우저 창을 건드리지 말아 주세요.");
     editor = await openEditor(p.config.blogId, userPaths(p.userId).profile, log);
     const context = editor.context;
     context.on("close", () => {
@@ -254,20 +271,62 @@ async function toNaver(post) {
     log(`[확인 필요] 자동으로 넣지 못한 것이 있어서, 그 자리에 주소나 [여기에 지도 넣기] 표시만 남겼습니다: ${failed.join(", ")}`);
     log("글쓰기 화면 위쪽의 '장소'(지도) 또는 '링크' 버튼으로 직접 넣어 주세요.");
   }
+  report("post");
+  if (p.social && post.instagram && post.shorts) {
+    job.step = "social";
+    // 블로그 글은 이미 들어갔으므로, 여기서 문제가 생겨도 오류로 멈추지 않고 알려만 준다
+    try {
+      job.result.social = await makeSocial(post, p, files, path.basename(backup, ".txt"));
+    } catch (error) {
+      console.error(error);
+      log(`[확인 필요] 인스타·쇼츠 파일을 다 만들지 못했습니다: ${error.message}`);
+    }
+  }
   job.step = "done";
   pending = null;
+}
+
+// 인스타그램 사진·글과 쇼츠 영상·제목을 '지난 글' 폴더 안 글마다의 폴더(posts\<만든 시각>)에 만든다
+async function makeSocial(post, p, files, stamp) {
+  const photos = files.map((file, i) => ({ file, n: i + 1 })).filter((x) => !isVideo(x.file));
+  if (!photos.length) {
+    log("사진 없이 동영상만 있어서 인스타·쇼츠 파일은 만들지 않았습니다.");
+    return null;
+  }
+  const dir = path.join(userPaths(p.userId).posts, stamp);
+  fs.mkdirSync(dir, { recursive: true });
+  log("인스타그램용 사진(세로 4:5)을 만드는 중...");
+  const instagram = await instagramPhotos(photos.map((x) => x.file), dir);
+  const caption = `${post.instagram.caption.trim()}\n\n${post.instagram.hashtags.map((t) => "#" + t).join(" ")}`;
+  fs.writeFileSync(path.join(dir, "인스타_글.txt"), caption, "utf8");
+  const { title, description, ending } = post.shorts;
+  fs.writeFileSync(path.join(dir, "쇼츠_제목과_설명.txt"), `${title.trim()}\n\n${description.trim()}\n`, "utf8");
+  const captionOf = new Map(post.shorts.captions.map((c) => [c.photo, c.text]));
+  const video = await shortsVideo(photos.map((x) => ({ file: x.file, caption: captionOf.get(x.n) ?? "" })), { title, ending }, path.join(dir, "쇼츠.mp4"), log);
+  log(`인스타 사진 ${instagram.length}장과 쇼츠 영상(${video.seconds}초)을 만들었습니다. 아래 '인스타·쇼츠'에서 글을 복사하고 파일을 올려 주세요.`);
+  return { stamp, instagram: instagram.map((f) => path.basename(f)), video: "쇼츠.mp4", caption, shortsTitle: title.trim(), shortsDescription: description.trim() };
 }
 
 async function runJob(config, body) {
   const photos = body.photos;
   const format = FORMATS[body.format] ? body.format : "daily";
-  Object.assign(job, { running: true, step: "ai", logs: [], progress: 0, startedAt: Date.now(), result: null, error: "", shot: "", draft: null });
-  log(`'${FORMATS[format].label}' 형식으로, 사진·동영상 ${photos.length}개를 보고 AI가 글을 씁니다. 보통 1~3분 걸리고, 사진이 많을수록 오래 걸립니다.`);
+  const social = Boolean(body.social);
+  Object.assign(job, { running: true, step: "ai", logs: [], progress: 0, startedAt: Date.now(), result: null, error: "", shot: "", draft: null, social });
+  log(`'${FORMATS[format].label}' 형식으로, 사진·동영상 ${photos.length}개를 보고 AI가 글을 씁니다${social ? " (인스타그램 글과 쇼츠 자막도 같이)" : ""}. 보통 1~3분 걸리고, 사진이 많을수록 오래 걸립니다.`);
   try {
     // 아이폰 사진(HEIC)은 JPG로 바꾼 파일을 AI와 네이버에 쓴다
     const files = [];
     for (const file of photos) files.push(await readable(file));
     if (files.some((f, i) => f !== photos[i])) log("아이폰 사진(HEIC)을 JPG로 바꿔서 씁니다.");
+    // 얼굴 위치는 AI가 글을 쓰기 전에 찾아 둔다 (미리 보기에서 사용자가 빼거나 더할 수 있다). AI에게는 원래 사진을 보여 준다
+    let faces = files.map(() => []);
+    if (body.mosaic) {
+      log("사진에서 얼굴을 찾는 중... (이 PC 안에서만 찾습니다)");
+      faces = await findFaces(files);
+      const count = faces.reduce((t, list) => t + list.length, 0);
+      log(`얼굴 ${count}곳을 찾았습니다.${body.review ? " 글이 완성되면 '글 확인'에서 모자이크할 곳을 고칠 수 있습니다." : ""}`);
+      if (files.some(isVideo)) log("동영상 속 얼굴은 가리지 못합니다. 동영상은 그대로 들어갑니다.");
+    }
     pending = {
       userId: currentUser().id, // 글을 만드는 동안에는 사용자를 못 바꾸게 막지만, 기록은 시작할 때의 사용자에게 남긴다
       config,
@@ -280,6 +339,9 @@ async function runJob(config, body) {
       emphasis: String(body.emphasis ?? "").trim(),
       format,
       review: Boolean(body.review),
+      social,
+      mosaic: Boolean(body.mosaic),
+      faces,
       // 하위 폴더 방식은 폴더를, 아니면 사진 하나하나를 '사용함'으로 기록한다
       usedKeys: config.mode === "subfolder" && body.folder ? [body.folder] : photos,
       costWon: 0,
@@ -292,7 +354,7 @@ async function runJob(config, body) {
 }
 
 // 미리 보기에서 사용자가 고른 것: accept(고친 글로 네이버에 넣기) / rewrite(다시 써 줘) / cancel(그만두기)
-function review({ action, post, request }) {
+function review({ action, post, request, faces }) {
   if (job.step !== "review" || !pending) return { ok: false, message: "확인할 글이 없습니다." };
   if (action === "cancel") {
     Object.assign(job, { step: "", draft: null, logs: [] });
@@ -300,6 +362,7 @@ function review({ action, post, request }) {
     return { ok: true };
   }
   const draft = cleanDraft(post, job.draft.post);
+  if (pending.mosaic && Array.isArray(faces)) pending.faces = cleanFaces(faces, pending.files.length);
   if (action === "accept") {
     Object.assign(job, { running: true, draft: null });
     toNaver(draft)
@@ -331,8 +394,33 @@ function cleanDraft(edited, original) {
       text: text(edited?.sections?.[i]?.text ?? s.text),
     })),
     outro: text(edited?.outro),
-    hashtags: Array.isArray(edited?.hashtags) ? edited.hashtags.map((t) => text(t).replace(/^#/, "").trim()).filter(Boolean) : original.hashtags,
+    hashtags: Array.isArray(edited?.hashtags) ? tags(edited.hashtags) : original.hashtags,
+    ...(original.instagram && {
+      instagram: {
+        caption: text(edited?.instagram?.caption ?? original.instagram.caption),
+        hashtags: Array.isArray(edited?.instagram?.hashtags) ? tags(edited.instagram.hashtags) : original.instagram.hashtags,
+      },
+    }),
+    ...(original.shorts && {
+      shorts: {
+        title: text(edited?.shorts?.title ?? original.shorts.title),
+        description: text(edited?.shorts?.description ?? original.shorts.description),
+        ending: text(edited?.shorts?.ending ?? original.shorts.ending),
+        captions: original.shorts.captions.map((c) => ({ photo: c.photo, text: text(edited?.shorts?.captions?.find((e) => e?.photo === c.photo)?.text ?? c.text) })),
+      },
+    }),
   };
+}
+const tags = (list) => list.map((t) => String(t ?? "").replace(/^#/, "").trim()).filter(Boolean);
+
+// 화면에서 고친 모자이크 자리 (사진마다 { x, y, w, h } 비율 목록). 이상한 값은 버린다
+function cleanFaces(list, count) {
+  const ok = (v) => Number.isFinite(v) && v >= 0 && v <= 1;
+  return Array.from({ length: count }, (_, i) =>
+    (Array.isArray(list[i]) ? list[i] : [])
+      .map((b) => ({ x: Number(b?.x), y: Number(b?.y), w: Number(b?.w), h: Number(b?.h) }))
+      .filter((b) => [b.x, b.y, b.w, b.h].every(ok) && b.w > 0.003 && b.h > 0.003 && b.x + b.w <= 1.001 && b.y + b.h <= 1.001),
+  );
 }
 
 // 오류가 났을 때 '오류 내용 복사'로 프로그램을 준 사람에게 보낼 글
@@ -446,6 +534,14 @@ async function headerImagesFor(config, userId) {
     if (fs.existsSync(file)) files.push(await readable(file));
   }
   return files;
+}
+
+// 글마다의 인스타·쇼츠 폴더(posts\<만든 시각>) 안 파일. name이 빈 문자열이면 폴더. 없거나 이상한 이름이면 null
+function postFile(stamp, name) {
+  if (!/^\d{4}(-\d{2}){5}$/.test(stamp ?? "")) return null;
+  if (name && (!/^[^\\/:*?"<>|]+$/.test(name) || name.startsWith("."))) return null;
+  const file = path.join(userPaths().posts, stamp, name ?? "");
+  return fs.existsSync(file) ? file : null;
 }
 
 // ---------- 사용자(블로그) 바꾸기 ----------
@@ -570,6 +666,20 @@ const server = http.createServer(async (req, res) => {
       const file = url.searchParams.get("path");
       if (!inPhotoFolder(file) || !isVideo(file)) return notFound();
       sendVideo(req, res, file);
+    } else if (req.method === "GET" && url.pathname === "/api/job-photo") {
+      // 글 확인의 모자이크 고르기 화면에 보여 줄, 지금 만드는 글의 사진 (휴대폰 회전 정보대로 돌린 모양)
+      const file = pending?.files[Number(url.searchParams.get("i"))];
+      if (!file || isVideo(file)) return notFound();
+      const view = await sharp(file, { failOn: "none" }).rotate().resize(900, 900, { fit: "inside", withoutEnlargement: true }).jpeg({ quality: 80 }).toBuffer();
+      res.writeHead(200, { "Content-Type": "image/jpeg" });
+      res.end(view);
+    } else if (req.method === "GET" && url.pathname === "/api/post-file") {
+      // 인스타·쇼츠 파일 (posts\<만든 시각>\ 안의 것만)
+      const file = postFile(url.searchParams.get("post"), url.searchParams.get("name"));
+      if (!file) return notFound();
+      if (file.endsWith(".mp4")) return sendVideo(req, res, file);
+      res.writeHead(200, { "Content-Type": file.endsWith(".jpg") ? "image/jpeg" : "text/plain; charset=utf-8" });
+      fs.createReadStream(file).pipe(res);
     } else if (req.method === "POST" && url.pathname === "/api/run") {
       const body = await readBody(req);
       const config = loadConfig();
@@ -583,14 +693,25 @@ const server = http.createServer(async (req, res) => {
       json({ ok: true, text: errorReport() });
     } else if (req.method === "POST" && url.pathname === "/api/open") {
       // 탐색기로 보여 준다: 지난 글 폴더, 오류 화면 사진
-      const { what } = await readBody(req);
+      const { what, post } = await readBody(req);
+      const postDir = postFile(post, "");
       if (what === "posts") {
         fs.mkdirSync(userPaths().posts, { recursive: true });
         exec(`explorer "${userPaths().posts}"`);
       } else if (what === "shot" && job.shot && fs.existsSync(job.shot)) {
         exec(`explorer /select,"${job.shot}"`);
+      } else if (what === "post-folder" && postDir) {
+        exec(`explorer "${postDir}"`);
+      } else if (what === "instagram" || what === "youtube") {
+        // 평소 쓰는 브라우저로 연다 (거기에 인스타그램·유튜브 로그인이 되어 있다)
+        exec(`start "" "${what === "instagram" ? "https://www.instagram.com/" : "https://studio.youtube.com/"}"`);
       }
       json({ ok: true });
+    } else if (req.method === "GET" && url.pathname === "/api/stats") {
+      json({ enabled: statsEnabled() });
+    } else if (req.method === "POST" && url.pathname === "/api/stats") {
+      setStatsEnabled((await readBody(req)).enabled);
+      json({ ok: true, enabled: statsEnabled() });
     } else if (req.method === "GET" && url.pathname === "/api/usage") {
       json(usageSummary());
     } else if (req.method === "GET" && url.pathname === "/api/posts") {
@@ -677,4 +798,5 @@ server.listen(PORT, "127.0.0.1", () => {
   console.log("블로그 글 생성기 창을 엽니다. 이 검은 창은 프로그램 창을 닫으면 저절로 닫힙니다.");
   if (!NO_WINDOW) openWindow(address);
   checkUpdate(); // 새 버전이 있으면 화면 위쪽에 알려 준다
+  report("open"); // 익명 사용 통계 (하루 한 번, 설정에서 끌 수 있다)
 });

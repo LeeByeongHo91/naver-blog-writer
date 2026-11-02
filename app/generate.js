@@ -96,6 +96,11 @@ function applyStandingRequests(post, config) {
     post.outro = fix(post.outro);
     for (const s of post.sections) Object.assign(s, { caption: fix(s.caption), heading: fix(s.heading), text: fix(s.text) });
     post.hashtags = post.hashtags.map(fix);
+    if (post.instagram) Object.assign(post.instagram, { caption: fix(post.instagram.caption), hashtags: post.instagram.hashtags.map(fix) });
+    if (post.shorts) {
+      Object.assign(post.shorts, { title: fix(post.shorts.title), description: fix(post.shorts.description), ending: fix(post.shorts.ending) });
+      for (const c of post.shorts.captions) c.text = fix(c.text);
+    }
     if (replaced) notes.push(`단어 바꾸기: AI가 놓친 ${replaced}곳을 프로그램이 바꿨습니다.`);
   }
   const body = [post.intro, ...post.sections.flatMap((s) => [s.caption, s.heading, s.text]), post.outro].join("\n");
@@ -157,6 +162,54 @@ const SCHEMA = {
   additionalProperties: false,
 };
 
+// '인스타·쇼츠도 같이 만들기'를 켜면 같은 요청에서 인스타그램 글과 쇼츠 자막도 받는다 (따로 부탁하면 사진을 또 보내야 해서 사용료가 두 배가 된다)
+const SOCIAL_SCHEMA = {
+  instagram: {
+    type: "object",
+    properties: {
+      caption: { type: "string", description: "인스타그램 게시물 본문 (해시태그 빼고)" },
+      hashtags: { type: "array", items: { type: "string" }, description: "# 없이 단어만" },
+    },
+    required: ["caption", "hashtags"],
+    additionalProperties: false,
+  },
+  shorts: {
+    type: "object",
+    properties: {
+      title: { type: "string", description: "유튜브 쇼츠 제목" },
+      description: { type: "string", description: "영상 설명" },
+      captions: {
+        type: "array",
+        description: "사진마다 영상 화면에 뜨는 짧은 자막",
+        items: {
+          type: "object",
+          properties: { photo: { type: "integer", description: "사진 번호 (1부터)" }, text: { type: "string" } },
+          required: ["photo", "text"],
+          additionalProperties: false,
+        },
+      },
+      ending: { type: "string", description: "영상 마지막 화면 문구" },
+    },
+    required: ["title", "description", "captions", "ending"],
+    additionalProperties: false,
+  },
+};
+
+function schemaFor(social) {
+  if (!social) return SCHEMA;
+  return { ...SCHEMA, properties: { ...SCHEMA.properties, ...SOCIAL_SCHEMA }, required: [...SCHEMA.required, "instagram", "shorts"] };
+}
+
+const SOCIAL_GUIDE = `
+
+이번에는 블로그 글과 함께 같은 사진으로 올릴 인스타그램 게시물 글과 유튜브 쇼츠(사진을 넘기는 세로 영상) 글도 써 주세요. 말투는 블로그 글과 같은 사람(예시 글이 있으면 그 말투)이고, 사실 관계 규칙도 똑같이 지킵니다.
+- instagram.caption: 블로그 글을 줄인 것이 아니라 인스타그램에 맞게 짧고 가볍게 씁니다. 첫 줄은 눈길을 끄는 한 문장, 전체 3~6줄, 이모지는 조금. 해시태그는 넣지 않습니다.
+- instagram.hashtags: 15~25개. 분야, 지역(알 때만), 분위기, 사진에 보이는 것을 섞습니다.
+- shorts.title: 40자 이내. 영상을 눌러 보고 싶게 만드는 한 줄.
+- shorts.description: 영상 설명 2~3줄과 끝에 해시태그 3~5개(#Shorts 포함).
+- shorts.captions: 동영상을 뺀 사진 번호마다 하나씩, 사진 번호 순서대로. 화면에 크게 뜨는 자막이라 18자 이내로 짧게, 이모지 없이. 그 사진에 보이는 장면과 맞아야 하고, 첫 사진 자막은 다음 장면이 궁금해지는 한 줄로 씁니다.
+- shorts.ending: 영상 마지막 화면 문구 20자 이내, 이모지 없이 (예: 더 많은 이야기는 블로그에서).`;
+
 export function sortFiles(files, order) {
   if (order === "name") return files.sort((a, b) => a.localeCompare(b, "ko", { numeric: true }));
   const time = new Map(files.map((f) => [f, fs.statSync(f).mtimeMs]));
@@ -204,8 +257,9 @@ function revision({ post, request }) {
 }
 
 // notes: 사진마다 블로그 주인이 적은 메모 (photos와 같은 순서). format: FORMATS의 이름.
-// onProgress(글자 수): AI가 쓰는 동안 몇 글자째인지 알려 준다. revise: { post, request } 앞 글을 고쳐 쓸 때
-export async function generatePost(config, photos, topic, memo, emphasis = "", { notes = [], format = "daily", onProgress, revise } = {}) {
+// onProgress(글자 수): AI가 쓰는 동안 몇 글자째인지 알려 준다. revise: { post, request } 앞 글을 고쳐 쓸 때.
+// social: 인스타그램 글과 쇼츠 자막도 같이 받는다 (post.instagram, post.shorts)
+export async function generatePost(config, photos, topic, memo, emphasis = "", { notes = [], format = "daily", onProgress, revise, social = false } = {}) {
   const style = FORMATS[format] ?? FORMATS.daily;
   const frames = await videoFrames(photos.filter(isVideo));
   const content = [];
@@ -254,7 +308,7 @@ ${samples.length ? "말투와 분량: 블로그 주인이 직접 쓴 예시 글�
       config.naverTemplate?.trim()
         ? "\n\n글 맨 아래에는 블로그 주인이 네이버에 저장해 둔 고정 템플릿(가게·도장 소개, 시간표, 지도, 톡톡·유튜브·인스타그램 안내 등)이 자동으로 붙습니다. 그런 고정 안내는 마무리 글에 쓰지 마세요."
         : ""
-    }${standingRequests(config)}${revise ? revision(revise) : ""}`,
+    }${social ? SOCIAL_GUIDE : ""}${standingRequests(config)}${revise ? revision(revise) : ""}`,
   });
 
   const client = new Anthropic({ apiKey: config.apiKey });
@@ -263,7 +317,7 @@ ${samples.length ? "말투와 분량: 블로그 주인이 직접 쓴 예시 글�
     max_tokens: 32000,
     system: SYSTEM + styleGuide(samples, footerText(config.footer) || config.naverTemplate?.trim()),
     messages: [{ role: "user", content }],
-    output_config: { effort: "medium", format: { type: "json_schema", schema: SCHEMA } },
+    output_config: { effort: "medium", format: { type: "json_schema", schema: schemaFor(social) } },
     // 안전 필터가 실수로 거절하면 다른 모델로 자동 재시도
     betas: ["server-side-fallback-2026-07-01"],
     fallbacks: "default",
@@ -281,7 +335,9 @@ ${samples.length ? "말투와 분량: 블로그 주인이 직접 쓴 예시 글�
 
   const checks = applyStandingRequests(post, config);
   const fixed = config.fixedHashtags.split(/[\s,#]+/).filter(Boolean);
-  post.hashtags = [...new Set([...fixed, ...post.hashtags.map((t) => t.replace(/^#/, "").replace(/\s+/g, ""))])];
+  const tags = (list) => [...new Set([...fixed, ...list.map((t) => t.replace(/^#/, "").replace(/\s+/g, ""))])].filter(Boolean);
+  post.hashtags = tags(post.hashtags);
+  if (post.instagram) post.instagram.hashtags = tags(post.instagram.hashtags);
   const usd = (message.usage.input_tokens * 4 + message.usage.output_tokens * 20) / 1e6;
   return { post, costWon: Math.round(usd * 1400), styleSamples: samples.length, checks };
 }

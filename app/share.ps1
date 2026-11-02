@@ -17,7 +17,7 @@ try {
     }
     # app 폴더는 프로그램 코드만. node_modules는 받는 PC에서 1_설치가 새로 깐다
     Get-ChildItem -LiteralPath (Join-Path $root "app") -File |
-        Where-Object { $_.Extension -in ".js", ".html", ".json", ".ps1", ".ico" } |
+        Where-Object { $_.Extension -in ".js", ".html", ".json", ".ps1", ".ico", ".onnx" } |
         Copy-Item -Destination (Join-Path $dest "app")
 
     # 혹시라도 API 키가 섞여 들어갔으면 만들지 않는다

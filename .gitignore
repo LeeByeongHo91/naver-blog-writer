@@ -14,5 +14,10 @@ app/*
 !app/*.html
 !app/*.ps1
 !app/icon.ico
+!app/*.onnx
 !app/package.json
 !app/package-lock.json
+!stats-server/
+stats-server/*
+!stats-server/Code.gs
+!stats-endpoint.txt
