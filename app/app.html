@@ -370,6 +370,7 @@
     <div id="errorTools" class="error-tools" hidden>
       <button id="copyReport">📋 오류 내용 복사</button>
       <button id="openShot" hidden>🖼 오류 화면 사진 보기</button>
+      <button class="make-report">📄 문제 보고 파일 만들기</button>
       <span class="hint" style="margin:0;align-self:center">복사한 뒤 프로그램을 준 사람에게 카카오톡으로 붙여넣어 보내 주세요.</span>
     </div>
   </div>
@@ -414,6 +415,7 @@
         <button id="rvRewrite">🔄 다시 써 줘</button>
       </div>
       <small class="hint" style="margin:0">다시 쓸 때마다 AI 사용료가 한 번 더 듭니다 (글 하나 만들 때와 비슷).</small>
+      <small class="hint" style="margin:0">💾 고치는 내용은 자동으로 저장됩니다. 창을 닫거나 PC가 꺼져도 프로그램을 다시 열면 이어서 고칠 수 있습니다.</small>
       <button id="rvCancel" class="small" style="align-self:flex-start">그만두기 (네이버에 넣지 않음)</button>
     </div>
   </div>
@@ -742,7 +744,7 @@ https://www.youtube.com/@..."></textarea>
 
   <button class="primary no-wizard" id="save">설정 저장</button>
   <div id="saveNotice" class="notice" hidden></div>
-  <div class="version-line no-wizard">프로그램 버전 <b id="versionNow"></b> <button id="checkUpdate" class="small">새 버전 확인</button> <span id="versionMsg"></span></div>
+  <div class="version-line no-wizard">프로그램 버전 <b id="versionNow"></b> <button id="checkUpdate" class="small">새 버전 확인</button> <button class="small make-report">📄 문제 보고 파일 만들기</button> <span id="versionMsg"></span></div>
 </section>
 </main>
 
@@ -1249,11 +1251,20 @@ function collectDraft() {
 const splitTags = (text) => text.split(/[\s,]+/).map((t) => t.replace(/^#/, "")).filter(Boolean);
 
 async function sendReview(body) {
+  clearTimeout(draftTimer);
   const result = await api("/api/review", body);
   if (!result.ok) return tell(result.message);
   $("reviewCard").hidden = true;
   watchJob();
 }
+// 고치는 내용을 자동으로 저장한다 (창을 닫거나 PC가 꺼져도 다시 열면 이어서 고칠 수 있게)
+let draftTimer = 0;
+function saveDraftSoon() {
+  clearTimeout(draftTimer);
+  draftTimer = setTimeout(() => api("/api/review", { action: "save", post: collectDraft(), faces: chosenFaces() }).catch(() => {}), 1000);
+}
+$("reviewCard").addEventListener("input", saveDraftSoon);
+$("faceGrid").addEventListener("click", saveDraftSoon, true); // 얼굴 칸은 누른 것을 위로 넘기지 않아서 내려가는 길에 받는다
 $("rvAccept").addEventListener("click", () => sendReview({ action: "accept", post: collectDraft(), faces: chosenFaces() }));
 $("rvRewrite").addEventListener("click", () => sendReview({ action: "rewrite", post: collectDraft(), request: $("rvRequest").value, faces: chosenFaces() }));
 $("rvCancel").addEventListener("click", async () => {
@@ -1435,6 +1446,12 @@ $("copyReport").addEventListener("click", async () => {
   setTimeout(() => ($("copyReport").textContent = "📋 오류 내용 복사"), 4000);
 });
 $("openShot").addEventListener("click", () => api("/api/open", { what: "shot" }));
+for (const button of document.querySelectorAll(".make-report")) {
+  button.addEventListener("click", async () => {
+    const result = await api("/api/problem-report", {});
+    tell(result.ok ? "문제 보고 파일을 만들었습니다. 열린 폴더의 '블로그글생성기_문제보고.txt'를 프로그램을 준 사람에게 카카오톡으로 보내 주세요.\nAPI 키, 비밀번호, 사진은 들어 있지 않습니다. 글 제목과 사진 파일 이름은 들어 있을 수 있습니다." : result.message);
+  });
+}
 
 // ---------- PC에서 사진 넣기 (끌어다 놓기, 파일 고르기) ----------
 async function uploadFiles(files) {
@@ -2219,6 +2236,7 @@ $("updateNow").addEventListener("click", async () => {
   else renderOrder();
   watchJob(); // 창을 다시 열었을 때 만들고 있던 글이 있으면 이어서 보여 준다
   checkForUpdate();
+  api("/api/update").then((state) => state.error && tell(state.error)); // 새 버전이 시작되지 않아 되돌렸을 때
 })();
 </script>
 </body>

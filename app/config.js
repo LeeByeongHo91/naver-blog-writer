@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { seal, unseal } from "./secret.js";
 
 // 설정, 로그인 정보, 사용한 사진 기록은 프로그램 폴더가 아니라 이 PC의 사용자 폴더에 둔다
 // (프로그램 폴더를 남에게 복사해 줘도 API 키, 로그인 정보, 말투 예시가 딸려 가지 않게)
@@ -58,6 +59,7 @@ export function userPaths(id = currentUser().id) {
     usage: path.join(dir, "usage.json"), // AI 사용료 기록
     header: path.join(dir, "header-images"), // 글 맨 위에 항상 넣을 이미지 (설정에서 넣은 것을 복사해 둔다)
     music: path.join(dir, "music"), // 쇼츠 영상 배경 음악 (설정에서 넣은 것을 복사해 둔다)
+    draft: path.join(dir, "draft.json"), // 미리 보기 중인 글 (프로그램이 꺼져도 이어서 고칠 수 있게)
   };
 }
 
@@ -148,13 +150,24 @@ function readStyleFolders() {
 export function loadConfig(id) {
   const file = userPaths(id).config;
   const saved = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {};
-  return { ...DEFAULTS, ...saved };
+  const config = { ...DEFAULTS, ...saved };
+  if (saved.apiKeySealed) config.apiKey = unseal(saved.apiKeySealed) ?? "";
+  else if (saved.apiKey) saveConfig(config, id); // 1.7.0 전 버전이 그대로 적어 둔 키를 잠근다
+  return config;
 }
 
 export function saveConfig(config, id) {
   const file = userPaths(id).config;
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(config, null, 2), "utf8");
+  fs.writeFileSync(file, JSON.stringify(sealApiKey(config), null, 2), "utf8");
+}
+
+// 파일에는 키 대신 잠근 글(apiKeySealed)을 적는다. 잠그지 못하는 PC에서는 예전처럼 그대로 적는다.
+// 키가 비어 있어도 풀지 못한 잠근 글은 남겨 둔다 (잠깐 풀지 못한 것일 수 있어서, 설정을 저장했다고 키를 잃지 않게)
+function sealApiKey({ apiKey, apiKeySealed, ...rest }) {
+  if (!apiKey) return apiKeySealed && unseal(apiKeySealed) === null ? { ...rest, apiKeySealed } : rest;
+  const sealed = seal(apiKey);
+  return sealed ? { ...rest, apiKeySealed: sealed } : { ...rest, apiKey };
 }
 
 export function loadUsed(id) {

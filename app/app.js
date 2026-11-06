@@ -13,13 +13,15 @@ import { loadConfig, saveConfig, listMedia, listSubfolders, loadUsed, markUsed, 
 import { readable } from "./media.js";
 import { generatePost, generateSocial, explainError, toBlocks, sortFiles, FORMATS, checkApiKey } from "./generate.js";
 import { isBlogId, recentPosts, postText } from "./blog.js";
-import { VERSION, checkUpdate, updateInfo, applyUpdate } from "./update.js";
+import { VERSION, checkUpdate, updateInfo, applyUpdate, rollbackUpdate } from "./update.js";
 import { openEditor, writeDraft, screenshot } from "./naver.js";
 import { findFaces, mosaic } from "./faces.js";
 import { instagramPhotos, shortsVideo } from "./social.js";
 import { report, statsEnabled, setStatsEnabled } from "./stats.js";
 import { speak } from "./voice.js";
+import { keepLog, writeReport } from "./diagnose.js";
 
+keepLog();
 const here = import.meta.dirname;
 // 시험용: BLOGWRITER_PORT 로 다른 포트에 띄운다 (진짜 프로그램이 켜져 있어도 시험할 수 있게)
 const PORT = Number(process.env.BLOGWRITER_PORT) || 47813;
@@ -29,7 +31,8 @@ const THUMB_DIR = path.join(DATA_DIR, "thumbs");
 const DRY_RUN = process.env.BLOGWRITER_DRY_RUN === "1";
 // 시험용: BLOGWRITER_NO_WINDOW=1 이면 프로그램 창을 띄우지 않고, /api/quit 으로 끝낼 수 있다
 const NO_WINDOW = process.env.BLOGWRITER_NO_WINDOW === "1";
-const AFTER_UPDATE = process.argv.includes("--after-update");
+const AFTER_ROLLBACK = process.argv.includes("--after-rollback");
+const AFTER_UPDATE = AFTER_ROLLBACK || process.argv.includes("--after-update");
 // 시험용: BLOGWRITER_NO_NAVER=1 이면 네이버 글쓰기 창을 열지 않고 그 단계를 건너뛴다 (인스타·쇼츠 만들기 시험)
 const NO_NAVER = process.env.BLOGWRITER_NO_NAVER === "1";
 
@@ -182,6 +185,38 @@ function backupPost(title, blocks, userId, names) {
   return file;
 }
 
+// 미리 보기 중인 글을 파일로 남긴다. 창을 닫거나 PC가 꺼져도 사용료를 다시 내지 않고 이어서 고칠 수 있게 (API 키가 든 config는 남기지 않는다)
+function saveDraft() {
+  const { config, files, names, ...rest } = pending;
+  const file = userPaths(pending.userId).draft;
+  try {
+    fs.writeFileSync(file + ".tmp", JSON.stringify({ ...rest, post: job.draft.post, checks: job.draft.checks }), "utf8");
+    fs.renameSync(file + ".tmp", file);
+  } catch (error) {
+    console.error("쓰던 글을 저장하지 못했습니다:", error);
+  }
+}
+
+const clearDraft = (userId) => fs.rmSync(userPaths(userId).draft, { force: true });
+
+// 남아 있는 글이 있으면 글 확인 화면으로 불러온다. 사진을 못 찾아도 글은 보여 준다 (구글 드라이브가 아직 안 켜졌을 수 있어서)
+async function restoreDraft(userId = currentUser().id) {
+  const file = userPaths(userId).draft;
+  if (!fs.existsSync(file)) return;
+  try {
+    const { post, checks, ...saved } = JSON.parse(fs.readFileSync(file, "utf8"));
+    const missing = saved.originals.filter((f) => !fs.existsSync(f));
+    const files = [];
+    for (const f of saved.originals) files.push(missing.includes(f) ? f : await readable(f));
+    pending = { ...saved, config: loadConfig(userId), files, names: new Map(files.map((f, i) => [f, path.basename(saved.originals[i])])) };
+    Object.assign(job, { step: "review", logs: [], startedAt: Date.now(), social: saved.social, draft: { post, checks, faces: saved.mosaic ? saved.faces : null }, draftId: job.draftId + 1 });
+    log("지난번에 확인하던 글을 불러왔습니다. 이어서 고치거나, 필요 없으면 아래 '그만두기'를 눌러 주세요.");
+    if (missing.length) log(`[확인 필요] 이 글의 사진을 찾지 못했습니다: ${missing.map((f) => path.basename(f)).join(", ")}\n구글 드라이브가 켜져 있는지 확인해 주세요.`);
+  } catch (error) {
+    console.error("쓰던 글을 불러오지 못했습니다:", error);
+  }
+}
+
 // 요청이 맞는지 확인하고, 문제가 있으면 사용자에게 보여 줄 문장을 돌려준다
 function checkRun(config, body) {
   const why = busy();
@@ -218,6 +253,7 @@ async function write(revise) {
     if (checks.length) log(checks.map((c) => "· " + c).join("\n"));
     if (p.review) {
       Object.assign(job, { step: "review", draft: { post, checks, faces: p.mosaic ? p.faces : null }, draftId: job.draftId + 1 });
+      saveDraft();
       log("글이 완성됐습니다. 아래 '글 확인'에서 읽어 보고, 고칠 곳은 고친 뒤 '이대로 네이버에 넣기'를 눌러 주세요.");
       return;
     }
@@ -250,6 +286,7 @@ async function toNaver(post) {
   const backup = backupPost(post.title, blocks, p.userId, p.names);
   const stamp = path.basename(backup, ".txt");
   savePostData(stamp, { post, originals: p.originals, faces: p.mosaic ? p.faces : null, format: p.format }, p.userId);
+  clearDraft(p.userId); // 이제부터는 '지난 글'에 남아 있다
   job.step = "naver";
   let failed = [];
   if (NO_NAVER) log("(시험) 네이버 입력은 건너뜁니다.");
@@ -456,6 +493,7 @@ async function runJob(config, body) {
       usedKeys: config.mode === "subfolder" && body.folder ? [body.folder] : photos,
       costWon: 0,
     };
+    clearDraft(pending.userId); // 넣다가 실패한 앞 글이 남아 있어도 새 글을 시작하면 그 글은 그만둔 것이다
   } catch (error) {
     job.running = false;
     return fail(error);
@@ -463,16 +501,22 @@ async function runJob(config, body) {
   await write();
 }
 
-// 미리 보기에서 사용자가 고른 것: accept(고친 글로 네이버에 넣기) / rewrite(다시 써 줘) / cancel(그만두기)
+// 미리 보기에서 사용자가 고른 것: accept(고친 글로 네이버에 넣기) / rewrite(다시 써 줘) / cancel(그만두기) / save(고치는 중 자동 저장)
 function review({ action, post, request, faces }) {
   if (job.step !== "review" || !pending) return { ok: false, message: "확인할 글이 없습니다." };
   if (action === "cancel") {
+    clearDraft(pending.userId);
     Object.assign(job, { step: "", draft: null, logs: [] });
     pending = null;
     return { ok: true };
   }
   const draft = cleanDraft(post, job.draft.post);
   if (pending.mosaic && Array.isArray(faces)) pending.faces = cleanFaces(faces, pending.files.length);
+  if (action === "save") {
+    Object.assign(job.draft, { post: draft, faces: pending.mosaic ? pending.faces : null });
+    saveDraft();
+    return { ok: true };
+  }
   if (action === "accept") {
     Object.assign(job, { running: true, draft: null });
     toNaver(draft)
@@ -698,7 +742,7 @@ function postFile(stamp, name, userId) {
 // ---------- 사용자(블로그) 바꾸기 ----------
 
 // 사용자 추가·바꾸기·이름 바꾸기·지우기. 글을 만드는 중이거나 네이버 창이 열려 있으면 그 사용자의 일이 끝난 뒤에 하게 한다
-function changeUsers({ action, id, name, copyApiKey }) {
+async function changeUsers({ action, id, name, copyApiKey }) {
   if (action !== "rename" && busy()) return { ok: false, message: busy() };
   name = String(name ?? "").trim();
   if ((action === "add" || action === "rename") && !name) return { ok: false, message: "이름을 적어 주세요." };
@@ -708,12 +752,14 @@ function changeUsers({ action, id, name, copyApiKey }) {
   else if (action === "remove") removeUser(id);
   else return { ok: false, message: "알 수 없는 요청입니다." };
   if (action !== "rename") Object.assign(job, { step: "", logs: [], result: null, error: "", startedAt: 0, draft: null }); // 앞 사용자의 진행 기록은 보여 주지 않는다
+  if (action !== "rename") await restoreDraft();
   return { ok: true, users: loadUsers() };
 }
 
 // ---------- 업데이트 ----------
 
 const update = { running: false, logs: [], error: "", done: false };
+if (AFTER_ROLLBACK) update.error = "새 버전이 제대로 시작되지 않아서 이전 버전으로 되돌렸습니다. 프로그램은 그대로 쓸 수 있습니다.\n설정 맨 아래 '문제 보고 파일 만들기'로 만든 파일을 프로그램을 준 사람에게 보내 주세요.";
 
 function startUpdate() {
   if (update.running) return { ok: false, message: "이미 업데이트하고 있습니다." };
@@ -726,21 +772,50 @@ function startUpdate() {
     })
     .catch((error) => {
       update.error = `업데이트하지 못했습니다: ${error.message}
-프로그램은 지금 버전 그대로 쓸 수 있습니다.`;
+${error.notRestored ? "원래대로 되돌리지 못한 파일이 있습니다. 설정 맨 아래 '문제 보고 파일 만들기'로 만든 파일을 프로그램을 준 사람에게 보내 주세요." : "프로그램은 지금 버전 그대로 쓸 수 있습니다."}`;
       console.error(error);
     })
     .finally(() => (update.running = false));
   return { ok: true };
 }
 
-// 새 코드로 다시 시작한다: 창과 서버를 닫고, 같은 프로그램을 새로 띄운 뒤 이 프로그램은 끝낸다
+// 새 코드로 다시 시작한다: 창과 서버를 닫고, 같은 프로그램을 새로 띄운다.
+// 이 프로그램은 아직 옛 코드로 돌고 있으므로, 새 버전이 뜨는 것을 본 뒤에 끝내고 뜨지 않으면 옛 파일로 되돌려 다시 띄운다
 async function restart() {
   restarting = true;
   server.close();
   await appWindow?.close().catch(() => {});
-  const args = [path.join(here, "app.js"), "--after-update"];
-  spawn(process.execPath, args, { cwd: here, detached: true, stdio: "ignore" }).unref();
+  const child = launch("--after-update");
+  if (!(await started(child, updateInfo().version))) {
+    child.kill();
+    const reason = fs.readFileSync(START_ERRORS, "utf8").trim();
+    console.error(`새 버전 ${updateInfo().version}이 시작되지 않아서 되돌립니다.\n${reason}`);
+    await rollbackUpdate().catch((error) => console.error(error));
+    launch("--after-rollback");
+  }
   process.exit(0);
+}
+
+const START_ERRORS = path.join(DATA_DIR, "start-errors.log");
+
+function launch(flag) {
+  const errors = fs.openSync(START_ERRORS, "w");
+  const child = spawn(process.execPath, [path.join(here, "app.js"), flag], { cwd: here, detached: true, stdio: ["ignore", "ignore", errors] });
+  fs.closeSync(errors);
+  child.unref();
+  return child;
+}
+
+// 새로 띄운 프로그램이 그 버전으로 대답하는지 1분까지 기다린다
+async function started(child, version) {
+  let exited = false;
+  child.on("exit", () => (exited = true));
+  for (let i = 0; i < 120 && !exited; i++) {
+    const info = await fetch(`http://127.0.0.1:${PORT}/api/update`, { signal: AbortSignal.timeout(2000) }).then((r) => r.json()).catch(() => null);
+    if (info?.current === version) return true;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  return false;
 }
 
 // ---------- 웹 서버 ----------
@@ -795,7 +870,7 @@ const server = http.createServer(async (req, res) => {
       saveConfig({ ...loadConfig(), ...(await readBody(req)) });
       json({ ok: true });
     } else if (req.method === "POST" && url.pathname === "/api/users") {
-      json(changeUsers(await readBody(req)));
+      json(await changeUsers(await readBody(req)));
     } else if (req.method === "POST" && url.pathname === "/api/check-key") {
       const { apiKey } = await readBody(req);
       json(apiKey?.trim() ? await checkApiKey(apiKey.trim()) : { ok: false, message: "API 키를 넣어 주세요." });
@@ -861,6 +936,11 @@ const server = http.createServer(async (req, res) => {
       json(review(await readBody(req)));
     } else if (req.method === "GET" && url.pathname === "/api/report") {
       json({ ok: true, text: errorReport() });
+    } else if (req.method === "POST" && url.pathname === "/api/problem-report") {
+      // 프로그램을 준 사람에게 보낼 파일을 만들고 탐색기로 보여 준다
+      const file = writeReport({ version: VERSION, config: loadConfig(), users: loadUsers().list.length, latest: updateInfo(), jobError: job.error && errorReport(), updateError: update.error });
+      if (!NO_WINDOW) exec(`explorer /select,"${file}"`);
+      json({ ok: true, file });
     } else if (req.method === "POST" && url.pathname === "/api/open") {
       // 탐색기로 보여 준다: 지난 글 폴더, 오류 화면 사진
       const { what, post } = await readBody(req);
@@ -999,8 +1079,10 @@ server.on("error", (error) => {
 });
 
 // 다른 PC에서 접속하지 못하게 이 PC(127.0.0.1)에서만 받는다
-server.listen(PORT, "127.0.0.1", () => {
-  console.log("블로그 글 생성기 창을 엽니다. 이 검은 창은 프로그램 창을 닫으면 저절로 닫힙니다.");
+server.listen(PORT, "127.0.0.1", async () => {
+  console.log(`블로그 글 생성기 ${VERSION} 창을 엽니다. 이 검은 창은 프로그램 창을 닫으면 저절로 닫힙니다.`);
+  for (const user of loadUsers().list) loadConfig(user.id); // 예전 버전이 그대로 적어 둔 API 키를 잠근다
+  await restoreDraft();
   if (!NO_WINDOW) openWindow(address);
   checkUpdate(); // 새 버전이 있으면 화면 위쪽에 알려 준다
   report("open"); // 익명 사용 통계 (하루 한 번, 설정에서 끌 수 있다)

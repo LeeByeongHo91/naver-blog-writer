@@ -67,6 +67,26 @@ function* walk(dir) {
   }
 }
 
+const undo = new Map(); // 바꾸기 전 파일: 경로 → 내용 (새로 생긴 파일이면 null)
+let reinstall = false; // 구성 요소를 새로 깔았으면 되돌릴 때도 다시 깐다
+const remember = (file) => undo.has(file) || undo.set(file, fs.existsSync(file) ? fs.readFileSync(file) : null);
+const installParts = () => run("cmd.exe", ["/c", "npm", "install", "--no-fund", "--no-audit"], { cwd: path.join(PROGRAM_DIR, "app"), timeout: 600000 });
+
+// 업데이트 전 파일로 되돌린다. 파일을 바꾸다 실패했을 때, 새 버전이 시작되지 않았을 때 쓴다
+export async function rollbackUpdate() {
+  for (const [file, data] of undo) {
+    if (data) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, data);
+    } else {
+      fs.rmSync(file, { force: true });
+    }
+  }
+  undo.clear();
+  if (reinstall) await installParts();
+  reinstall = false;
+}
+
 // 새 버전을 받아 프로그램 폴더에 덮어쓴다. 내용이 같은 파일은 건드리지 않는다
 // (지금 실행 중인 .bat 파일을 바꾸면 cmd가 엉뚱한 줄을 읽을 수 있어서 바뀐 파일만 쓴다).
 // 프로그램 폴더에만 있는 파일(예전 *말투 폴더 등)은 지우지 않는다. log: 진행 상황을 받는 함수
@@ -104,19 +124,34 @@ export async function applyUpdate(log) {
   const dependencies = () => JSON.stringify(JSON.parse(fs.readFileSync(packageFile, "utf8")).dependencies);
   const before = dependencies();
   let changed = 0;
-  for (const file of walk(src)) {
-    const dest = path.join(PROGRAM_DIR, path.relative(src, file));
-    const data = fs.readFileSync(file);
-    if (fs.existsSync(dest) && fs.readFileSync(dest).equals(data)) continue;
-    fs.mkdirSync(path.dirname(dest), { recursive: true });
-    fs.writeFileSync(dest, data);
-    changed++;
-  }
-  // 예전 버전에만 있던 파일은 지운다
-  for (const name of OBSOLETE) fs.rmSync(path.join(PROGRAM_DIR, name), { force: true });
-  if (dependencies() !== before) {
-    log("필요한 구성 요소를 새로 까는 중... (1~2분 걸릴 수 있습니다)");
-    await run("cmd.exe", ["/c", "npm", "install", "--no-fund", "--no-audit"], { cwd: path.join(PROGRAM_DIR, "app"), timeout: 600000 });
+  undo.clear();
+  try {
+    for (const file of walk(src)) {
+      const dest = path.join(PROGRAM_DIR, path.relative(src, file));
+      const data = fs.readFileSync(file);
+      if (fs.existsSync(dest) && fs.statSync(dest).isFile() && fs.readFileSync(dest).equals(data)) continue;
+      remember(dest);
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.writeFileSync(dest, data);
+      changed++;
+    }
+    // 예전 버전에만 있던 파일은 지운다
+    for (const name of OBSOLETE) {
+      remember(path.join(PROGRAM_DIR, name));
+      fs.rmSync(path.join(PROGRAM_DIR, name), { force: true });
+    }
+    if (dependencies() !== before) {
+      log("필요한 구성 요소를 새로 까는 중... (1~2분 걸릴 수 있습니다)");
+      reinstall = true;
+      await installParts();
+    }
+  } catch (error) {
+    log("문제가 생겨서 바꾼 파일을 원래대로 되돌립니다...");
+    await rollbackUpdate().catch((problem) => {
+      console.error(problem);
+      error.notRestored = true;
+    });
+    throw error;
   }
   fs.rmSync(work, { recursive: true, force: true });
   log(`${info.version} 버전으로 바꿨습니다 (파일 ${changed}개). 프로그램을 다시 시작합니다. 창이 잠깐 닫혔다가 다시 열립니다.`);
