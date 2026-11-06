@@ -114,8 +114,8 @@ export async function writeDraft({ page, frame }, title, blocks, { save = true, 
     await pause();
   }
 
-  if (save) await saveDraft(page, frame, log);
-  return failed;
+  const saved = save ? await saveDraft(page, frame, log) : false;
+  return { failed, saved };
 }
 
 // 본문을 가운데 정렬로 바꾼다. 꾸밈용이라 실패해도 글 입력은 계속한다.
@@ -389,10 +389,11 @@ async function saveDraft(page, frame, log) {
   await frame.locator("button[class*='save_btn']").first().click();
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
-    if ((await count.innerText()) !== before) return;
+    if ((await count.innerText()) !== before) return true;
     await page.waitForTimeout(500);
   }
   log("[주의] 임시저장이 됐는지 확인하지 못했습니다. 브라우저 창 오른쪽 위 '저장'을 직접 한 번 눌러 주세요.");
+  return false;
 }
 
 export async function screenshot(page, name) {

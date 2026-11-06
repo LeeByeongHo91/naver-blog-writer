@@ -92,6 +92,8 @@ function applyStandingRequests(post, config) {
   }, text);
   if (pairs.length) {
     post.title = fix(post.title);
+    if (post.titleOptions) post.titleOptions = post.titleOptions.map(fix);
+    if (post.notice) post.notice = fix(post.notice);
     post.intro = fix(post.intro);
     post.outro = fix(post.outro);
     for (const s of post.sections) Object.assign(s, { caption: fix(s.caption), heading: fix(s.heading), text: fix(s.text) });
@@ -139,6 +141,7 @@ const SCHEMA = {
   type: "object",
   properties: {
     title: { type: "string", description: "블로그 글 제목" },
+    titleOptions: { type: "array", items: { type: "string" }, description: "title과 다른 제목 후보 2개" },
     intro: { type: "string", description: "도입 글" },
     sections: {
       type: "array",
@@ -158,7 +161,7 @@ const SCHEMA = {
     outro: { type: "string", description: "마무리 글" },
     hashtags: { type: "array", items: { type: "string" }, description: "# 없이 단어만" },
   },
-  required: ["title", "intro", "sections", "outro", "hashtags"],
+  required: ["title", "titleOptions", "intro", "sections", "outro", "hashtags"],
   additionalProperties: false,
 };
 
@@ -195,9 +198,36 @@ const SOCIAL_SCHEMA = {
   },
 };
 
-function schemaFor(social) {
-  if (!social) return SCHEMA;
-  return { ...SCHEMA, properties: { ...SCHEMA.properties, ...SOCIAL_SCHEMA }, required: [...SCHEMA.required, "instagram", "shorts"] };
+const NOTICE_SCHEMA = { notice: { type: "string", description: "카카오톡 채널·단체방에 올릴 짧은 공지문" } };
+
+function schemaFor(social, notice) {
+  return {
+    ...SCHEMA,
+    properties: { ...SCHEMA.properties, ...(social && SOCIAL_SCHEMA), ...(notice && NOTICE_SCHEMA) },
+    required: [...SCHEMA.required, ...(social ? ["instagram", "shorts"] : []), ...(notice ? ["notice"] : [])],
+  };
+}
+
+const TITLE_GUIDE = `
+
+제목은 title 말고도 titleOptions에 후보 2개를 더 씁니다. 세 제목은 분위기와 강조점이 서로 달라야 합니다. 후보 하나는 사람들이 네이버에서 검색할 말을 앞에 둔 제목으로 씁니다. 지역명, 가게·도장 이름은 블로그 소개나 메모, 사진 속 글자로 알 수 있을 때만 넣고 지어내지 않습니다.`;
+
+const NOTICE_GUIDE = `
+
+이번에는 카카오톡 채널이나 단체방에 올릴 짧은 공지문(notice)도 써 주세요. 받는 사람은 블로그 소개에 적힌 독자(학부모, 단골손님 등)입니다. 인사 한 줄, 이번 글의 핵심 2~3줄, 맺는 말 한 줄로 200자 이내로 씁니다. 이모지는 조금만 쓰고 해시태그와 링크는 넣지 않습니다(블로그 주소는 프로그램이 붙입니다). 사실 관계 규칙은 블로그 글과 똑같이 지키고, 사진 속 아이들이나 손님의 이름은 메모에 있어도 쓰지 않습니다.`;
+
+// 최근에 쓴 글과 블로그 주인이 고친 기록을 AI에게 알려 준다. history: { recent, learned }
+function historyGuide({ recent = [], learned = [] } = {}) {
+  let guide = "";
+  if (recent.length) {
+    const lines = recent.map((p) => `- 제목: ${p.title}${p.opening ? ` / 여는 말: ${p.opening}` : ""}${p.closing ? ` / 맺는 말: ${p.closing}` : ""}`);
+    guide += `\n\n블로그 주인이 최근에 올린 글입니다. 읽는 사람이 같은 글을 또 읽는 느낌이 들지 않게, 제목과 글을 여는 방식, 맺는 표현을 이 글들과 다르게 씁니다. 다만 말투는 그대로이고, 블로그 주인이 매번 쓰는 고정 인사나 예시 글의 인사는 유지합니다:\n${lines.join("\n")}`;
+  }
+  if (learned.length) {
+    const lines = learned.map((e) => `- "${e.before}" → ${e.after ? `"${e.after}"` : "(지움)"}`);
+    guide += `\n\n블로그 주인이 지난 글에서 AI 글을 직접 고친 기록입니다. 왜 고쳤을지 생각해서 이번 글은 처음부터 그 방향으로 씁니다. 그 글에만 해당하는 사실이나 이름은 가져오지 않습니다:\n${lines.join("\n")}`;
+  }
+  return guide;
 }
 
 const SOCIAL_GUIDE = `
@@ -263,8 +293,9 @@ function revision({ post, request }) {
 
 // notes: 사진마다 블로그 주인이 적은 메모 (photos와 같은 순서). format: FORMATS의 이름.
 // onProgress(글자 수): AI가 쓰는 동안 몇 글자째인지 알려 준다. revise: { post, request } 앞 글을 고쳐 쓸 때.
-// social: 인스타그램 글과 쇼츠 자막도 같이 받는다 (post.instagram, post.shorts)
-export async function generatePost(config, photos, topic, memo, emphasis = "", { notes = [], format = "daily", onProgress, revise, social = false } = {}) {
+// social: 인스타그램 글과 쇼츠 자막도 같이 받는다 (post.instagram, post.shorts). notice: 공지문도 받는다 (post.notice)
+// history: 최근 글과 블로그 주인이 고친 기록 (historyGuide)
+export async function generatePost(config, photos, topic, memo, emphasis = "", { notes = [], format = "daily", onProgress, revise, social = false, notice = false, history } = {}) {
   const style = FORMATS[format] ?? FORMATS.daily;
   const frames = await videoFrames(photos.filter(isVideo));
   const content = [];
@@ -313,7 +344,7 @@ ${samples.length ? "말투와 분량: 블로그 주인이 직접 쓴 예시 글�
       config.naverTemplate?.trim()
         ? "\n\n글 맨 아래에는 블로그 주인이 네이버에 저장해 둔 고정 템플릿(가게·도장 소개, 시간표, 지도, 톡톡·유튜브·인스타그램 안내 등)이 자동으로 붙습니다. 그런 고정 안내는 마무리 글에 쓰지 마세요."
         : ""
-    }${social ? socialGuide(config) : ""}${standingRequests(config)}${revise ? revision(revise) : ""}`,
+    }${TITLE_GUIDE}${social ? socialGuide(config) : ""}${notice ? NOTICE_GUIDE : ""}${historyGuide(history)}${standingRequests(config)}${revise ? revision(revise) : ""}`,
   });
 
   const client = new Anthropic({ apiKey: config.apiKey });
@@ -322,7 +353,7 @@ ${samples.length ? "말투와 분량: 블로그 주인이 직접 쓴 예시 글�
     max_tokens: 32000,
     system: SYSTEM + styleGuide(samples, footerText(config.footer) || config.naverTemplate?.trim()),
     messages: [{ role: "user", content }],
-    output_config: { effort: "medium", format: { type: "json_schema", schema: schemaFor(social) } },
+    output_config: { effort: "medium", format: { type: "json_schema", schema: schemaFor(social, notice) } },
     // 안전 필터가 실수로 거절하면 다른 모델로 자동 재시도
     betas: ["server-side-fallback-2026-07-01"],
     fallbacks: "default",
@@ -399,6 +430,13 @@ export async function checkApiKey(apiKey) {
 export function explainError(error) {
   if (error instanceof Anthropic.AuthenticationError) return "API 키가 올바르지 않습니다. '설정' 화면에서 키를 다시 확인해 주세요.";
   if (error instanceof Anthropic.PermissionDeniedError) return "이 API 키로는 사용할 수 없습니다. 키 권한을 확인해 주세요.";
+  // 직접 정한 월 한도에 닿으면 400, 계정 등급의 월 한도에 닿으면 429로 온다
+  if (error instanceof Anthropic.BadRequestError && /specified (workspace )?API usage limits/i.test(error.message)) {
+    return "Claude Console에서 정해 둔 월 사용 한도에 닿아서 AI가 멈췄습니다. platform.claude.com 의 Billing에서 Spend limits 금액을 올리거나, 다음 달에 다시 해 주세요.";
+  }
+  if (error instanceof Anthropic.RateLimitError && /enforced_spend_limit_reached|monthly API usage threshold/i.test(error.message)) {
+    return "이 계정의 월 사용 한도에 닿아서 AI가 멈췄습니다. 다음 달 1일(한국 시각 오전 9시)에 다시 쓸 수 있습니다.";
+  }
   if (error instanceof Anthropic.RateLimitError) return "요청이 너무 많습니다. 1분쯤 뒤에 다시 실행해 주세요.";
   if (error instanceof Anthropic.BadRequestError && /credit balance/i.test(error.message)) {
     return "API 키는 맞지만 충전된 돈(크레딧)이 없습니다. platform.claude.com 의 Billing(결제) 메뉴에서 충전한 뒤 다시 해 주세요.";

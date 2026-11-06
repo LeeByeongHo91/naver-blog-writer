@@ -23,6 +23,9 @@ export const DEFAULTS = {
   reviewFirst: true, // AI가 쓴 글을 네이버에 넣기 전에 화면에서 먼저 보고 고친다
   social: true, // 인스타그램 사진·글과 쇼츠 영상도 같이 만든다
   mosaic: false, // 사진 속 얼굴을 찾아 모자이크한다 (블로그·인스타·쇼츠 모두)
+  notice: false, // 카카오톡 채널·단체방에 올릴 짧은 공지문도 쓴다
+  learnEdits: true, // 글 확인에서 고친 내용을 기억해 다음 글에 반영한다
+  warnWon: 20000, // 이 PC의 이번 달 AI 사용료가 이 금액을 넘으면 알려 준다 (0이면 알리지 않는다)
   blogAbout: "", // 어떤 블로그이고 누가 읽는지. AI가 글의 관점과 독자를 정할 때 쓴다
   topic: "",
   memo: "",
@@ -60,6 +63,8 @@ export function userPaths(id = currentUser().id) {
     header: path.join(dir, "header-images"), // 글 맨 위에 항상 넣을 이미지 (설정에서 넣은 것을 복사해 둔다)
     music: path.join(dir, "music"), // 쇼츠 영상 배경 음악 (설정에서 넣은 것을 복사해 둔다)
     draft: path.join(dir, "draft.json"), // 미리 보기 중인 글 (프로그램이 꺼져도 이어서 고칠 수 있게)
+    learned: path.join(dir, "learned.json"), // 글 확인에서 고친 내용 (다음 글에 반영)
+    queue: path.join(dir, "queue.json"), // 차례대로 만들 글 목록
   };
 }
 
@@ -207,6 +212,11 @@ export function usageSummary(id) {
   };
 }
 
+// 이 PC 모든 사용자의 이번 달 사용료 (사용료 경고용. 같은 API 키를 나눠 쓸 수 있어서 합친다)
+export function monthWon() {
+  return loadUsers().list.reduce((total, user) => total + usageSummary(user.id).thisMonth.won, 0);
+}
+
 // 지난 글 목록 (새 글부터). 파일 첫 줄이 제목, 파일 이름이 만든 시각
 export function listPosts(id) {
   const dir = userPaths(id).posts;
@@ -222,6 +232,16 @@ export function listPosts(id) {
       const extras = fs.existsSync(path.join(dir, name.replace(/\.txt$/, ""))); // 인스타·쇼츠 파일 폴더
       return { name, title: title || "(제목 없음)", date: m ? `${m[1]}.${Number(m[2])}.${Number(m[3])} ${m[4]}:${m[5]}` : "", extras };
     });
+}
+
+// AI에게 보여 줄 최근 글의 제목과 여는 말, 맺는 말 (같은 표현을 되풀이하지 않게). 글 내용 JSON이 없는 옛 글은 txt 앞부분을 쓴다
+export function recentSummaries(id, count = 5) {
+  const short = (text) => String(text ?? "").replace(/\s+/g, " ").trim();
+  return listPosts(id).slice(0, count).map(({ name, title }) => {
+    const post = readPostData(name.replace(/\.txt$/, ""), id)?.post;
+    const lines = readPost(name, id).split(/\r?\n/).slice(1).filter((line) => line.trim() && !line.startsWith("["));
+    return { title, opening: short(post?.intro ?? lines.slice(0, 2).join(" ")).slice(0, 100), closing: short(post?.outro).slice(-80) };
+  });
 }
 
 // 글을 다시 쓰지 않고 인스타·쇼츠를 다시 만들 수 있게, 글 내용(JSON)과 원래 사진 경로, 모자이크 자리를 같이 남긴다

@@ -9,7 +9,7 @@ import path from "node:path";
 import { exec, spawn } from "node:child_process";
 import sharp from "sharp";
 import { chromium } from "playwright-core";
-import { loadConfig, saveConfig, listMedia, listSubfolders, loadUsed, markUsed, isVideo, DATA_DIR, userPaths, loadUsers, currentUser, addUser, switchUser, renameUser, removeUser, recordUsage, usageSummary, listPosts, readPost, savePostData, readPostData, IMAGE_EXTS, VIDEO_EXTS } from "./config.js";
+import { loadConfig, saveConfig, listMedia, listSubfolders, loadUsed, markUsed, isVideo, DATA_DIR, userPaths, loadUsers, currentUser, addUser, switchUser, renameUser, removeUser, recordUsage, usageSummary, monthWon, listPosts, readPost, recentSummaries, savePostData, readPostData, IMAGE_EXTS, VIDEO_EXTS } from "./config.js";
 import { readable } from "./media.js";
 import { generatePost, generateSocial, explainError, toBlocks, sortFiles, FORMATS, checkApiKey } from "./generate.js";
 import { isBlogId, recentPosts, postText } from "./blog.js";
@@ -20,6 +20,9 @@ import { instagramPhotos, shortsVideo } from "./social.js";
 import { report, statsEnabled, setStatsEnabled } from "./stats.js";
 import { speak } from "./voice.js";
 import { keepLog, writeReport } from "./diagnose.js";
+import { learnEdits, loadLearned, forgetLearned } from "./learn.js";
+import { checkPhotos } from "./photocheck.js";
+import { exportSettings, importSettings } from "./transfer.js";
 
 keepLog();
 const here = import.meta.dirname;
@@ -88,16 +91,17 @@ function photoList(sub) {
     return { ok: false, message: "사진 폴더를 찾을 수 없습니다. 구글 드라이브가 켜져 있는지 확인하거나 설정에서 폴더를 다시 골라 주세요." };
   }
   const used = new Set(loadUsed());
-  const item = (file) => ({ path: file, name: path.basename(file), video: isVideo(file), used: used.has(file) });
+  const queued = new Set(loadQueue().flatMap((q) => [...q.photos, q.folder]));
+  const item = (file) => ({ path: file, name: path.basename(file), video: isVideo(file), used: used.has(file), queued: queued.has(file) });
   if (config.mode === "subfolder") {
-    const folders = sortFiles(listSubfolders(config.photoFolder), config.order).map((f) => ({ path: f, name: path.basename(f), used: used.has(f) }));
-    const current = folders.find((f) => f.path === sub) ?? folders.find((f) => !f.used) ?? folders[0];
+    const folders = sortFiles(listSubfolders(config.photoFolder), config.order).map((f) => ({ path: f, name: path.basename(f), used: used.has(f), queued: queued.has(f) }));
+    const current = folders.find((f) => f.path === sub) ?? folders.find((f) => !f.used && !f.queued) ?? folders[0];
     if (!current) return { ok: true, mode: "subfolder", folders, items: [], preselect: [] };
     const files = sortFiles(listMedia(current.path), "name");
     return { ok: true, mode: "subfolder", folders, folder: current.path, folderName: current.name, items: files.map(item), preselect: files.slice(0, config.photosPerPost) };
   }
   const files = sortFiles(listMedia(config.photoFolder), config.order);
-  return { ok: true, mode: "batch", items: files.map(item), preselect: files.filter((f) => !used.has(f)).slice(0, config.photosPerPost) };
+  return { ok: true, mode: "batch", items: files.map(item), preselect: files.filter((f) => !used.has(f) && !queued.has(f)).slice(0, config.photosPerPost) };
 }
 
 // 사진 폴더 밖의 파일은 보여 주지 않는다
@@ -159,6 +163,7 @@ function log(text) {
 
 // 지금 뭔가 하고 있어서 다른 일(새 글, 사용자 바꾸기, 업데이트)을 하면 안 되면 그 이유를 돌려준다
 function busy() {
+  if (batch.running) return "여러 글을 차례대로 만드는 중입니다. 끝날 때까지 기다리거나 '이번 글까지만 하고 멈추기'를 눌러 주세요.";
   if (job.running) return "글을 만드는 중입니다. 끝날 때까지 기다려 주세요.";
   if (job.step === "review") return "앞에서 만든 글을 확인하는 중입니다. 아래 '글 확인'에서 '이대로 네이버에 넣기'나 '그만두기'를 먼저 눌러 주세요.";
   if (editor) return "앞에서 연 네이버 글쓰기 창이 아직 열려 있습니다. 그 창에서 글을 확인(발행)한 뒤 창을 닫고 다시 해 주세요.";
@@ -219,8 +224,10 @@ async function restoreDraft(userId = currentUser().id) {
 
 // 요청이 맞는지 확인하고, 문제가 있으면 사용자에게 보여 줄 문장을 돌려준다
 function checkRun(config, body) {
-  const why = busy();
-  if (why) return why;
+  return busy() || checkRequest(config, body);
+}
+
+function checkRequest(config, body) {
   if (!config.apiKey || !config.blogId || !config.photoFolder) return "설정이 아직 안 되어 있습니다. '설정' 탭에서 API 키, 블로그 아이디, 사진 폴더를 넣고 저장해 주세요.";
   if (!Array.isArray(body.photos) || !body.photos.length) return "글에 넣을 사진을 한 장 이상 골라 주세요.";
   if (body.photos.length > MAX_PHOTOS) return `사진은 한 번에 ${MAX_PHOTOS}장까지 넣을 수 있습니다.`;
@@ -245,8 +252,11 @@ async function write(revise) {
       format: p.format,
       revise,
       social: p.social,
+      notice: p.notice,
+      history: { recent: recentSummaries(p.userId), learned: p.config.learnEdits ? loadLearned(p.userId).slice(-12) : [] },
       onProgress: (chars) => (job.progress = chars),
     });
+    p.aiPost = structuredClone(post); // 사용자가 고친 부분을 찾을 때 비교한다
     recordUsage(costWon, revise ? "rewrite" : "new", p.userId);
     p.costWon += costWon;
     log(`${revise ? "다시 쓴 글" : "글 완성"}: "${post.title}" (사용료 약 ${costWon}원${styleSamples ? `, 말투 예시 ${styleSamples}편 참고` : ""})`);
@@ -289,6 +299,7 @@ async function toNaver(post) {
   clearDraft(p.userId); // 이제부터는 '지난 글'에 남아 있다
   job.step = "naver";
   let failed = [];
+  let saved = true;
   if (NO_NAVER) log("(시험) 네이버 입력은 건너뜁니다.");
   else try {
     log("네이버 글쓰기 화면을 엽니다. 입력이 끝날 때까지 그 브라우저 창을 건드리지 말아 주세요.");
@@ -298,7 +309,7 @@ async function toNaver(post) {
       if (editor?.context === context) editor = null;
       quitIfDone();
     });
-    failed = await writeDraft(editor, post.title, blocks, { log, save: !DRY_RUN, template: p.config.naverTemplate?.trim() });
+    ({ failed, saved } = await writeDraft(editor, post.title, blocks, { log, save: !DRY_RUN, template: p.config.naverTemplate?.trim() }));
   } catch (error) {
     job.shot = editor ? await screenshot(editor.page, "error").catch(() => "") : "";
     throw new Error(
@@ -306,8 +317,8 @@ async function toNaver(post) {
     );
   }
   if (!DRY_RUN) markUsed(p.usedKeys, p.userId);
-  job.result = { title: post.title, costWon: p.costWon, failed, backup };
-  log("임시저장까지 끝났습니다. 네이버 창에서 글을 확인하고, 괜찮으면 오른쪽 위 '발행'을 눌러 주세요. 확인이 끝나면 네이버 창을 닫으면 됩니다.");
+  job.result = { title: post.title, costWon: p.costWon, failed, saved, backup, notice: noticeFor(post, p.config.blogId), inQueue: p.inQueue };
+  log(p.inQueue ? "임시저장까지 끝났습니다. 글은 나중에 네이버의 임시저장 글에서 확인해 주세요." : "임시저장까지 끝났습니다. 네이버 창에서 글을 확인하고, 괜찮으면 오른쪽 위 '발행'을 눌러 주세요. 확인이 끝나면 네이버 창을 닫으면 됩니다.");
   if (failed.length) {
     log(`[확인 필요] 자동으로 넣지 못한 것이 있어서, 그 자리에 주소나 [여기에 지도 넣기] 표시만 남겼습니다: ${failed.join(", ")}`);
     log("글쓰기 화면 위쪽의 '장소'(지도) 또는 '링크' 버튼으로 직접 넣어 주세요.");
@@ -325,6 +336,11 @@ async function toNaver(post) {
   }
   job.step = "done";
   pending = null;
+}
+
+// 공지문에 블로그 주소를 붙인다 (AI가 주소를 잘못 쓰지 않게 프로그램이 붙인다). 공지문이 없는 글이면 빈 문자열
+function noticeFor(post, blogId) {
+  return post.notice?.trim() ? `${post.notice.trim()}\n\n👉 https://blog.naver.com/${blogId}` : "";
 }
 
 // 인스타그램 사진·글과 쇼츠 영상·제목을 '지난 글' 폴더 안 글마다의 폴더(posts\<만든 시각>)에 만든다.
@@ -378,7 +394,7 @@ const remake = { running: false, stamp: "", logs: [], error: "", social: null };
 
 function startRemake(stamp) {
   if (remake.running) return { ok: false, message: "이미 만들고 있습니다. 끝날 때까지 기다려 주세요." };
-  if (job.running) return { ok: false, message: "글을 만드는 중입니다. 끝난 뒤에 해 주세요." };
+  if (job.running || batch.running) return { ok: false, message: "글을 만드는 중입니다. 끝난 뒤에 해 주세요." };
   if (!readPost(`${stamp}.txt`)) return { ok: false, message: "글을 찾을 수 없습니다." };
   Object.assign(remake, { running: true, stamp, logs: [], error: "", social: null });
   const say = (text) => {
@@ -487,6 +503,8 @@ async function runJob(config, body) {
       format,
       review: Boolean(body.review),
       social,
+      notice: Boolean(body.notice),
+      inQueue: Boolean(body.inQueue),
       mosaic: Boolean(body.mosaic),
       faces,
       // 하위 폴더 방식은 폴더를, 아니면 사진 하나하나를 '사용함'으로 기록한다
@@ -518,6 +536,7 @@ function review({ action, post, request, faces }) {
     return { ok: true };
   }
   if (action === "accept") {
+    rememberEdits(draft);
     Object.assign(job, { running: true, draft: null });
     toNaver(draft)
       .catch(fail)
@@ -535,11 +554,23 @@ function review({ action, post, request, faces }) {
   return { ok: false, message: "알 수 없는 요청입니다." };
 }
 
+// 사용자가 고친 부분을 다음 글에 반영할 수 있게 남긴다. 실패해도 글 넣기는 막지 않는다
+function rememberEdits(draft) {
+  if (!pending.aiPost || !pending.config.learnEdits) return;
+  try {
+    const count = learnEdits(pending.aiPost, draft, pending.userId);
+    if (count) log(`고친 내용 ${count}곳을 기억해 두었습니다. 다음 글에 반영합니다.`);
+  } catch (error) {
+    console.error("고친 내용을 기억하지 못했습니다:", error);
+  }
+}
+
 // 화면에서 고친 글을 받아 모양을 맞춘다. 사진 자리(photos)는 화면에서 못 바꾸므로 원래 글의 것을 쓴다
 function cleanDraft(edited, original) {
   const text = (v) => String(v ?? "");
   return {
     title: text(edited?.title).trim() || original.title,
+    titleOptions: original.titleOptions ?? [],
     intro: text(edited?.intro),
     sections: original.sections.map((s, i) => ({
       photos: s.photos,
@@ -549,6 +580,7 @@ function cleanDraft(edited, original) {
     })),
     outro: text(edited?.outro),
     hashtags: Array.isArray(edited?.hashtags) ? tags(edited.hashtags) : original.hashtags,
+    ...(original.notice !== undefined && { notice: text(edited?.notice ?? original.notice) }),
     ...(original.instagram && {
       instagram: {
         caption: text(edited?.instagram?.caption ?? original.instagram.caption),
@@ -597,7 +629,7 @@ function errorReport() {
 // 프로그램 창도 닫혔고, 글 만들기도 끝났고, 네이버 창도 닫혔으면 프로그램을 끝낸다
 function quitIfDone() {
   if (restarting) return;
-  if (windowClosed && !job.running && !editor) process.exit(0);
+  if (windowClosed && !job.running && !batch.running && !editor) process.exit(0);
 }
 
 // 프로그램 창에 끌어다 놓거나 'PC에서 사진 추가'로 고른 사진을 사진 폴더에 복사한다 (하위 폴더 방식이면 지금 보고 있는 하위 폴더에).
@@ -739,6 +771,77 @@ function postFile(stamp, name, userId) {
   return fs.existsSync(file) ? file : null;
 }
 
+// ---------- 여러 글 차례대로 만들기 ----------
+// 대기열에 넣은 글을 하나씩 AI로 쓰고 네이버에 임시저장한다. 글 확인 없이 바로 넣고, 저장이 확인되면 네이버 창을 닫고 다음 글로 간다.
+// 문제가 생기면 멈추고 남은 글은 대기열에 그대로 둔다 (다시 시작하면 거기부터 한다)
+
+const batch = { running: false, stopping: false, total: 0, done: [], problem: "" };
+
+function loadQueue(userId) {
+  const file = userPaths(userId).queue;
+  return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : [];
+}
+const saveQueue = (list, userId) => fs.writeFileSync(userPaths(userId).queue, JSON.stringify(list), "utf8");
+
+function changeQueue({ action, item, id }) {
+  if (action === "start") return startQueue();
+  if (action === "stop") {
+    batch.stopping = true;
+    return { ok: true };
+  }
+  if (action === "remove") {
+    if (batch.running) return { ok: false, message: "만드는 중에는 뺄 수 없습니다. 멈춘 뒤에 빼 주세요." };
+    saveQueue(loadQueue().filter((q) => q.id !== id));
+    return { ok: true };
+  }
+  if (action === "add") {
+    const problem = checkRequest(loadConfig(), item ?? {});
+    if (problem) return { ok: false, message: problem };
+    const { photos, notes, format, topic, emphasis, memo, folder, folderName, social, mosaic, notice } = item;
+    const label = String(topic ?? "").trim() || folderName || `사진 ${photos.length}장`;
+    saveQueue([...loadQueue(), { id: crypto.randomUUID(), label, photos, notes, format, topic, emphasis, memo, folder, folderName, social, mosaic, notice }]);
+    return { ok: true };
+  }
+  return { ok: false, message: "알 수 없는 요청입니다." };
+}
+
+function startQueue() {
+  if (busy()) return { ok: false, message: busy() };
+  const userId = currentUser().id;
+  const total = loadQueue(userId).length;
+  if (!total) return { ok: false, message: "대기열이 비어 있습니다." };
+  Object.assign(batch, { running: true, stopping: false, total, done: [], problem: "" });
+  runQueue(userId)
+    .catch((error) => {
+      console.error(error);
+      batch.problem = error.message;
+    })
+    .finally(() => {
+      batch.running = false;
+      quitIfDone();
+    });
+  return { ok: true };
+}
+
+async function runQueue(userId) {
+  for (;;) {
+    const [item] = loadQueue(userId);
+    if (!item || batch.stopping) return;
+    const config = loadConfig(userId);
+    const problem = checkRequest(config, item);
+    if (problem) return void (batch.problem = `"${item.label}": ${problem}`);
+    await runJob(config, { ...item, review: false, inQueue: true });
+    if (job.step !== "done") return void (batch.problem = `"${item.label}"에서 멈췄습니다. 남은 글은 대기열에 그대로 있습니다.\n${job.error}`);
+    saveQueue(loadQueue(userId).filter((q) => q.id !== item.id), userId);
+    const { title, failed, saved, costWon } = job.result;
+    batch.done.push({ title, failed, costWon });
+    // 저장이 확인되지 않았는데 창을 닫으면 글이 네이버에 남지 않는다
+    if (!saved && !DRY_RUN) return void (batch.problem = `"${title}"이 임시저장됐는지 확인하지 못해서 멈췄습니다. 네이버 창 오른쪽 위 '저장'을 누르고 창을 닫은 뒤, 남은 글을 다시 시작해 주세요.`);
+    await editor?.context.close().catch(() => {});
+    editor = null;
+  }
+}
+
 // ---------- 사용자(블로그) 바꾸기 ----------
 
 // 사용자 추가·바꾸기·이름 바꾸기·지우기. 글을 만드는 중이거나 네이버 창이 열려 있으면 그 사용자의 일이 끝난 뒤에 하게 한다
@@ -819,6 +922,15 @@ async function started(child, version) {
 }
 
 // ---------- 웹 서버 ----------
+
+function readText(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    req.on("error", reject);
+  });
+}
 
 function readBody(req) {
   return new Promise((resolve) => {
@@ -936,6 +1048,30 @@ const server = http.createServer(async (req, res) => {
       json(review(await readBody(req)));
     } else if (req.method === "GET" && url.pathname === "/api/report") {
       json({ ok: true, text: errorReport() });
+    } else if (req.method === "POST" && url.pathname === "/api/photo-check") {
+      // 흐린 사진과 거의 같은 사진 찾기
+      const items = [];
+      for (const file of (await readBody(req)).paths ?? []) {
+        if (!inPhotoFolder(file) || isVideo(file)) continue;
+        const thumb = await thumbnail(file).catch(() => "");
+        if (thumb) items.push({ path: file, thumb });
+      }
+      json({ ok: true, count: items.length, flags: await checkPhotos(items) });
+    } else if (req.method === "GET" && url.pathname === "/api/queue") {
+      json({ items: loadQueue(), batch });
+    } else if (req.method === "POST" && url.pathname === "/api/queue") {
+      json(changeQueue(await readBody(req)));
+    } else if (req.method === "GET" && url.pathname === "/api/learned") {
+      json(loadLearned());
+    } else if (req.method === "POST" && url.pathname === "/api/learned") {
+      json(forgetLearned((await readBody(req)).id));
+    } else if (req.method === "POST" && url.pathname === "/api/settings-export") {
+      const file = exportSettings();
+      if (!NO_WINDOW) exec(`explorer /select,"${file}"`);
+      json({ ok: true, file });
+    } else if (req.method === "POST" && url.pathname === "/api/settings-import") {
+      if (busy()) return json({ ok: false, message: busy() });
+      json({ ok: true, ...importSettings(await readText(req)) });
     } else if (req.method === "POST" && url.pathname === "/api/problem-report") {
       // 프로그램을 준 사람에게 보낼 파일을 만들고 탐색기로 보여 준다
       const file = writeReport({ version: VERSION, config: loadConfig(), users: loadUsers().list.length, latest: updateInfo(), jobError: job.error && errorReport(), updateError: update.error });
@@ -963,7 +1099,9 @@ const server = http.createServer(async (req, res) => {
       setStatsEnabled((await readBody(req)).enabled);
       json({ ok: true, enabled: statsEnabled() });
     } else if (req.method === "GET" && url.pathname === "/api/usage") {
-      json(usageSummary());
+      const { warnWon } = loadConfig();
+      const spent = monthWon();
+      json({ ...usageSummary(), warn: warnWon > 0 && spent >= warnWon ? { spent, limit: warnWon } : null });
     } else if (req.method === "GET" && url.pathname === "/api/posts") {
       json(listPosts());
     } else if (req.method === "GET" && url.pathname === "/api/post") {
@@ -1000,7 +1138,7 @@ const server = http.createServer(async (req, res) => {
     } else if (req.method === "GET" && url.pathname === "/api/post-social") {
       const stamp = url.searchParams.get("post");
       const saved = readPostData(stamp);
-      json({ social: postSocial(stamp), needsAi: !(saved?.post?.instagram && saved?.post?.shorts) });
+      json({ social: postSocial(stamp), needsAi: !(saved?.post?.instagram && saved?.post?.shorts), notice: saved ? noticeFor(saved.post, loadConfig().blogId) : "" });
     } else if (req.method === "POST" && url.pathname === "/api/remake") {
       json(startRemake((await readBody(req)).post));
     } else if (req.method === "GET" && url.pathname === "/api/remake") {
@@ -1031,6 +1169,7 @@ const server = http.createServer(async (req, res) => {
         ...job,
         elapsed: job.startedAt ? Math.round((Date.now() - job.startedAt) / 1000) : 0,
         editorOpen: Boolean(editor),
+        batch,
         review: Boolean(pending?.review),
         photos: (pending?.originals ?? []).map((p) => ({ path: p, name: path.basename(p), video: isVideo(p) })),
       });
