@@ -11,6 +11,9 @@ const RULES = [
 
 const squash = (text) => String(text ?? "").replace(/[\s.-]+/g, "");
 
+// 글자만 보고 정해진 모양의 개인정보가 있는지 본다 (이름은 알 수 없다)
+export const hasPrivatePattern = (text) => RULES.some(({ pattern }) => String(text ?? "").search(pattern) >= 0);
+
 // 글에서 사람이 읽는 곳 전부 (어디에 있는지 알려 주려고 이름을 붙인다)
 function postFields(post) {
   const fields = [["제목", post.title], ...(post.titleOptions ?? []).map((t) => ["제목 후보", t]), ["도입", post.intro]];

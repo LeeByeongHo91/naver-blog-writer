@@ -1,5 +1,6 @@
 // 익명 사용 통계: 몇 대의 PC에서 이 프로그램을 쓰고 있는지 프로그램을 만든 사람이 알 수 있게 한다.
-// 보내는 것은 이 PC에 처음 만든 무작위 번호, 프로그램 버전, 일의 종류("open" 하루 한 번 켬 / "post" 글 하나 만듦)뿐이다.
+// 보내는 것은 이 PC에 처음 만든 무작위 번호, 프로그램 버전, 일의 종류("open" 하루 한 번 켬 / "post" 글 하나 만듦 / "naver" 네이버 화면에서 버튼을 못 찾음)뿐이다.
+// "naver"일 때는 못 찾은 버튼의 이름(프로그램에 정해 둔 말)도 같이 보낸다.
 // 이름, 블로그 아이디, API 키, 글, 사진은 보내지 않는다. 설정 > 고급 설정에서 끌 수 있다.
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -51,18 +52,21 @@ async function endpoint(data) {
   return data.endpoint;
 }
 
-// event: "open"(하루에 한 번만 보낸다) | "post". 인터넷이 안 되거나 실패해도 프로그램에는 아무 영향이 없다
-export async function report(event) {
+const ONCE_A_DAY = { open: "lastOpen", naver: "lastNaver" };
+
+// event: "open", "naver"(하루에 한 번만 보낸다) | "post". detail: 못 찾은 버튼 이름. 인터넷이 안 되거나 실패해도 프로그램에는 아무 영향이 없다
+export async function report(event, detail = "") {
   if (OFF) return;
   try {
     const data = load();
     if (data.enabled === false) return;
-    if (event === "open" && data.lastOpen === today()) return;
+    const sentKey = ONCE_A_DAY[event];
+    if (sentKey && data[sentKey] === today()) return;
     const url = await endpoint(data);
     save(data);
     if (!url) return;
-    const query = new URLSearchParams({ id: data.id, v: VERSION, e: event });
+    const query = new URLSearchParams({ id: data.id, v: VERSION, e: event, ...(detail && { d: detail }) });
     const res = await fetch(`${url}?${query}`, { signal: AbortSignal.timeout(8000) });
-    if (res.ok && event === "open") save({ ...load(), lastOpen: today() });
+    if (res.ok && sentKey) save({ ...load(), [sentKey]: today() });
   } catch {}
 }

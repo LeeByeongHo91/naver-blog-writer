@@ -569,7 +569,8 @@ function review({ action, post, request, faces }) {
 function rememberEdits(draft) {
   if (!pending.aiPost || !pending.config.learnEdits) return;
   try {
-    const count = learnEdits(pending.aiPost, draft, pending.userId);
+    const secrets = [...findPrivate(pending.aiPost, pending.config), ...findPrivate(draft, pending.config)].map((item) => item.text);
+    const count = learnEdits(pending.aiPost, draft, pending.userId, secrets);
     if (count) log(`고친 내용 ${count}곳을 기억해 두었습니다. 다음 글에 반영합니다.`);
   } catch (error) {
     console.error("고친 내용을 기억하지 못했습니다:", error);
@@ -867,7 +868,11 @@ async function runQueue(userId) {
 
 const naverCheck = { running: false, ok: null, message: "", logs: [] };
 
-const brokenEditor = (names) => `네이버 글쓰기 화면이 바뀐 것 같습니다. 찾지 못한 것: ${names.join(", ")}\n네이버에는 아무것도 넣지 않았습니다. 프로그램을 고쳐야 하니 '문제 보고 파일 만들기'로 만든 파일을 프로그램을 준 사람에게 보내 주세요.`;
+// 버튼을 못 찾았을 때 보여 줄 문장. 프로그램을 만든 사람도 바로 고칠 수 있게 익명 통계로 알린다 (통계를 끈 PC는 보내지 않는다)
+function brokenEditor(names) {
+  report("naver", names.join(", "));
+  return `네이버 글쓰기 화면이 바뀐 것 같습니다. 찾지 못한 것: ${names.join(", ")}\n네이버에는 아무것도 넣지 않았습니다. 프로그램을 고쳐야 하니 '문제 보고 파일 만들기'로 만든 파일을 프로그램을 준 사람에게 보내 주세요.`;
+}
 
 // 점검이 끝나면 결과를 naverCheck에 남기고, 글을 넣을 수 있으면 true를 돌려준다
 async function testNaver(userId, say) {
