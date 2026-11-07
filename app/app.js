@@ -14,7 +14,7 @@ import { readable } from "./media.js";
 import { generatePost, generateSocial, explainError, toBlocks, sortFiles, FORMATS, checkApiKey } from "./generate.js";
 import { isBlogId, recentPosts, postText } from "./blog.js";
 import { VERSION, checkUpdate, updateInfo, applyUpdate, rollbackUpdate } from "./update.js";
-import { openEditor, writeDraft, screenshot } from "./naver.js";
+import { openEditor, checkEditor, writeDraft, screenshot } from "./naver.js";
 import { findFaces, mosaic } from "./faces.js";
 import { instagramPhotos, shortsVideo } from "./social.js";
 import { report, statsEnabled, setStatsEnabled } from "./stats.js";
@@ -23,6 +23,7 @@ import { keepLog, writeReport } from "./diagnose.js";
 import { learnEdits, loadLearned, forgetLearned } from "./learn.js";
 import { checkPhotos } from "./photocheck.js";
 import { exportSettings, importSettings } from "./transfer.js";
+import { findPrivate, privacySummary } from "./privacy.js";
 
 keepLog();
 const here = import.meta.dirname;
@@ -163,6 +164,7 @@ function log(text) {
 
 // 지금 뭔가 하고 있어서 다른 일(새 글, 사용자 바꾸기, 업데이트)을 하면 안 되면 그 이유를 돌려준다
 function busy() {
+  if (naverCheck.running) return "네이버 화면을 점검하는 중입니다. 끝날 때까지 기다려 주세요.";
   if (batch.running) return "여러 글을 차례대로 만드는 중입니다. 끝날 때까지 기다리거나 '이번 글까지만 하고 멈추기'를 눌러 주세요.";
   if (job.running) return "글을 만드는 중입니다. 끝날 때까지 기다려 주세요.";
   if (job.step === "review") return "앞에서 만든 글을 확인하는 중입니다. 아래 '글 확인'에서 '이대로 네이버에 넣기'나 '그만두기'를 먼저 눌러 주세요.";
@@ -214,7 +216,7 @@ async function restoreDraft(userId = currentUser().id) {
     const files = [];
     for (const f of saved.originals) files.push(missing.includes(f) ? f : await readable(f));
     pending = { ...saved, config: loadConfig(userId), files, names: new Map(files.map((f, i) => [f, path.basename(saved.originals[i])])) };
-    Object.assign(job, { step: "review", logs: [], startedAt: Date.now(), social: saved.social, draft: { post, checks, faces: saved.mosaic ? saved.faces : null }, draftId: job.draftId + 1 });
+    Object.assign(job, { step: "review", logs: [], startedAt: Date.now(), social: saved.social, draft: { post, checks, privacy: findPrivate(post, pending.config), faces: saved.mosaic ? saved.faces : null }, draftId: job.draftId + 1 });
     log("지난번에 확인하던 글을 불러왔습니다. 이어서 고치거나, 필요 없으면 아래 '그만두기'를 눌러 주세요.");
     if (missing.length) log(`[확인 필요] 이 글의 사진을 찾지 못했습니다: ${missing.map((f) => path.basename(f)).join(", ")}\n구글 드라이브가 켜져 있는지 확인해 주세요.`);
   } catch (error) {
@@ -262,7 +264,7 @@ async function write(revise) {
     log(`${revise ? "다시 쓴 글" : "글 완성"}: "${post.title}" (사용료 약 ${costWon}원${styleSamples ? `, 말투 예시 ${styleSamples}편 참고` : ""})`);
     if (checks.length) log(checks.map((c) => "· " + c).join("\n"));
     if (p.review) {
-      Object.assign(job, { step: "review", draft: { post, checks, faces: p.mosaic ? p.faces : null }, draftId: job.draftId + 1 });
+      Object.assign(job, { step: "review", draft: { post, checks, privacy: findPrivate(post, p.config), faces: p.mosaic ? p.faces : null }, draftId: job.draftId + 1 });
       saveDraft();
       log("글이 완성됐습니다. 아래 '글 확인'에서 읽어 보고, 고칠 곳은 고친 뒤 '이대로 네이버에 넣기'를 눌러 주세요.");
       return;
@@ -309,6 +311,11 @@ async function toNaver(post) {
       if (editor?.context === context) editor = null;
       quitIfDone();
     });
+    const uses = new Set(blocks.map((b) => b.type));
+    if (p.config.naverTemplate?.trim()) uses.add("template");
+    const { broken, partly } = await checkEditor(editor.frame, uses);
+    if (broken.length) throw new Error(brokenEditor(broken));
+    if (partly.length) log(`[확인 필요] 네이버 화면에서 찾지 못한 것이 있습니다: ${partly.join(", ")}. 글은 계속 넣고, 그 부분은 끝에 알려 드립니다.`);
     ({ failed, saved } = await writeDraft(editor, post.title, blocks, { log, save: !DRY_RUN, template: p.config.naverTemplate?.trim() }));
   } catch (error) {
     job.shot = editor ? await screenshot(editor.page, "error").catch(() => "") : "";
@@ -317,7 +324,10 @@ async function toNaver(post) {
     );
   }
   if (!DRY_RUN) markUsed(p.usedKeys, p.userId);
-  job.result = { title: post.title, costWon: p.costWon, failed, saved, backup, notice: noticeFor(post, p.config.blogId), inQueue: p.inQueue };
+  // 글 확인을 건너뛰면 아무도 읽지 않은 글이므로, 찾은 것을 화면에 남겨 발행 전에 보게 한다
+  const privacy = p.review ? [] : findPrivate(post, p.config);
+  job.result = { title: post.title, costWon: p.costWon, failed, saved, backup, notice: noticeFor(post, p.config.blogId), inQueue: p.inQueue, privacy };
+  if (privacy.length) log(`[확인 필요] 개인정보로 보이는 내용이 있습니다: ${privacySummary(privacy)}. 발행 전에 네이버에서 꼭 확인해 주세요.`);
   log(p.inQueue ? "임시저장까지 끝났습니다. 글은 나중에 네이버의 임시저장 글에서 확인해 주세요." : "임시저장까지 끝났습니다. 네이버 창에서 글을 확인하고, 괜찮으면 오른쪽 위 '발행'을 눌러 주세요. 확인이 끝나면 네이버 창을 닫으면 됩니다.");
   if (failed.length) {
     log(`[확인 필요] 자동으로 넣지 못한 것이 있어서, 그 자리에 주소나 [여기에 지도 넣기] 표시만 남겼습니다: ${failed.join(", ")}`);
@@ -531,9 +541,10 @@ function review({ action, post, request, faces }) {
   const draft = cleanDraft(post, job.draft.post);
   if (pending.mosaic && Array.isArray(faces)) pending.faces = cleanFaces(faces, pending.files.length);
   if (action === "save") {
-    Object.assign(job.draft, { post: draft, faces: pending.mosaic ? pending.faces : null });
+    const privacy = findPrivate(draft, pending.config);
+    Object.assign(job.draft, { post: draft, privacy, faces: pending.mosaic ? pending.faces : null });
     saveDraft();
-    return { ok: true };
+    return { ok: true, privacy };
   }
   if (action === "accept") {
     rememberEdits(draft);
@@ -571,6 +582,7 @@ function cleanDraft(edited, original) {
   return {
     title: text(edited?.title).trim() || original.title,
     titleOptions: original.titleOptions ?? [],
+    privacyFlags: original.privacyFlags ?? [],
     intro: text(edited?.intro),
     sections: original.sections.map((s, i) => ({
       photos: s.photos,
@@ -629,7 +641,7 @@ function errorReport() {
 // 프로그램 창도 닫혔고, 글 만들기도 끝났고, 네이버 창도 닫혔으면 프로그램을 끝낸다
 function quitIfDone() {
   if (restarting) return;
-  if (windowClosed && !job.running && !batch.running && !editor) process.exit(0);
+  if (windowClosed && !job.running && !batch.running && !naverCheck.running && !editor) process.exit(0);
 }
 
 // 프로그램 창에 끌어다 놓거나 'PC에서 사진 추가'로 고른 사진을 사진 폴더에 복사한다 (하위 폴더 방식이면 지금 보고 있는 하위 폴더에).
@@ -824,6 +836,14 @@ function startQueue() {
 }
 
 async function runQueue(userId) {
+  // 사용료를 쓰기 전에 네이버 로그인과 화면부터 확인한다
+  if (!NO_NAVER) {
+    Object.assign(job, { running: true, step: "naver", logs: [], result: null, error: "", shot: "", draft: null, startedAt: Date.now() });
+    log("네이버 글쓰기 화면을 먼저 점검합니다.");
+    const ok = await testNaver(userId, log);
+    Object.assign(job, { running: false, step: "" });
+    if (!ok) return void (batch.problem = `${naverCheck.message}\n사용료는 들지 않았고, 대기열은 그대로 있습니다.`);
+  }
   for (;;) {
     const [item] = loadQueue(userId);
     if (!item || batch.stopping) return;
@@ -833,13 +853,64 @@ async function runQueue(userId) {
     await runJob(config, { ...item, review: false, inQueue: true });
     if (job.step !== "done") return void (batch.problem = `"${item.label}"에서 멈췄습니다. 남은 글은 대기열에 그대로 있습니다.\n${job.error}`);
     saveQueue(loadQueue(userId).filter((q) => q.id !== item.id), userId);
-    const { title, failed, saved, costWon } = job.result;
-    batch.done.push({ title, failed, costWon });
+    const { title, failed, saved, costWon, privacy } = job.result;
+    batch.done.push({ title, failed, costWon, privacy });
     // 저장이 확인되지 않았는데 창을 닫으면 글이 네이버에 남지 않는다
     if (!saved && !DRY_RUN) return void (batch.problem = `"${title}"이 임시저장됐는지 확인하지 못해서 멈췄습니다. 네이버 창 오른쪽 위 '저장'을 누르고 창을 닫은 뒤, 남은 글을 다시 시작해 주세요.`);
     await editor?.context.close().catch(() => {});
     editor = null;
   }
+}
+
+// ---------- 네이버 화면 점검 ----------
+// 글쓰기 화면을 열어 프로그램이 눌러야 할 버튼이 다 있는지만 본다. 아무것도 입력하거나 저장하지 않는다
+
+const naverCheck = { running: false, ok: null, message: "", logs: [] };
+
+const brokenEditor = (names) => `네이버 글쓰기 화면이 바뀐 것 같습니다. 찾지 못한 것: ${names.join(", ")}\n네이버에는 아무것도 넣지 않았습니다. 프로그램을 고쳐야 하니 '문제 보고 파일 만들기'로 만든 파일을 프로그램을 준 사람에게 보내 주세요.`;
+
+// 점검이 끝나면 결과를 naverCheck에 남기고, 글을 넣을 수 있으면 true를 돌려준다
+async function testNaver(userId, say) {
+  Object.assign(naverCheck, { running: true, ok: null, message: "", logs: [] });
+  let opened;
+  try {
+    opened = await openEditor(loadConfig(userId).blogId, userPaths(userId).profile, say);
+    const { broken, partly } = await checkEditor(opened.frame);
+    naverCheck.ok = !broken.length;
+    naverCheck.message = broken.length ? brokenEditor(broken) : partly.length ? `글은 넣을 수 있지만 찾지 못한 버튼이 있습니다: ${partly.join(", ")}\n이 기능을 쓰는 글은 그 부분만 직접 넣어야 합니다.` : "네이버 글쓰기 화면에 필요한 버튼이 모두 있습니다.";
+  } catch (error) {
+    console.error(error);
+    naverCheck.ok = false;
+    naverCheck.message = `네이버 글쓰기 화면을 열지 못했습니다: ${error.message.split("\n")[0]}`;
+  } finally {
+    await opened?.context.close().catch(() => {});
+    naverCheck.running = false;
+  }
+  console.log(naverCheck.message);
+  return naverCheck.ok;
+}
+
+function startNaverCheck() {
+  if (busy()) return { ok: false, message: busy() };
+  const { id } = currentUser();
+  if (!loadConfig(id).blogId) return { ok: false, message: "블로그 아이디를 먼저 넣어 주세요." };
+  testNaver(id, (text) => {
+    naverCheck.logs.push(text);
+    console.log(text);
+  }).finally(quitIfDone);
+  return { ok: true };
+}
+
+// ---------- 글 쉬는 날 알림 ----------
+
+// 마지막 글을 만든 지 정해 둔 날짜가 지났으면 며칠인지 돌려준다 (아직 글이 없거나 끈 사용자는 null)
+function restedDays() {
+  const { restDays } = loadConfig();
+  const match = listPosts()[0]?.name.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!match || !(restDays > 0)) return null;
+  const now = new Date();
+  const days = Math.round((new Date(now.getFullYear(), now.getMonth(), now.getDate()) - new Date(match[1], match[2] - 1, match[3])) / 86_400_000);
+  return days >= restDays ? days : null;
 }
 
 // ---------- 사용자(블로그) 바꾸기 ----------
@@ -1061,6 +1132,10 @@ const server = http.createServer(async (req, res) => {
       json({ items: loadQueue(), batch });
     } else if (req.method === "POST" && url.pathname === "/api/queue") {
       json(changeQueue(await readBody(req)));
+    } else if (req.method === "GET" && url.pathname === "/api/naver-check") {
+      json(naverCheck);
+    } else if (req.method === "POST" && url.pathname === "/api/naver-check") {
+      json(startNaverCheck());
     } else if (req.method === "GET" && url.pathname === "/api/learned") {
       json(loadLearned());
     } else if (req.method === "POST" && url.pathname === "/api/learned") {
@@ -1074,7 +1149,7 @@ const server = http.createServer(async (req, res) => {
       json({ ok: true, ...importSettings(await readText(req)) });
     } else if (req.method === "POST" && url.pathname === "/api/problem-report") {
       // 프로그램을 준 사람에게 보낼 파일을 만들고 탐색기로 보여 준다
-      const file = writeReport({ version: VERSION, config: loadConfig(), users: loadUsers().list.length, latest: updateInfo(), jobError: job.error && errorReport(), updateError: update.error });
+      const file = writeReport({ version: VERSION, config: loadConfig(), users: loadUsers().list.length, latest: updateInfo(), jobError: job.error && errorReport(), updateError: update.error, naverCheck: naverCheck.ok === false ? naverCheck.message : "" });
       if (!NO_WINDOW) exec(`explorer /select,"${file}"`);
       json({ ok: true, file });
     } else if (req.method === "POST" && url.pathname === "/api/open") {
@@ -1101,7 +1176,7 @@ const server = http.createServer(async (req, res) => {
     } else if (req.method === "GET" && url.pathname === "/api/usage") {
       const { warnWon } = loadConfig();
       const spent = monthWon();
-      json({ ...usageSummary(), warn: warnWon > 0 && spent >= warnWon ? { spent, limit: warnWon } : null });
+      json({ ...usageSummary(), warn: warnWon > 0 && spent >= warnWon ? { spent, limit: warnWon } : null, rested: restedDays() });
     } else if (req.method === "GET" && url.pathname === "/api/posts") {
       json(listPosts());
     } else if (req.method === "GET" && url.pathname === "/api/post") {

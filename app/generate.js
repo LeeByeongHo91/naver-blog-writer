@@ -160,8 +160,22 @@ const SCHEMA = {
     },
     outro: { type: "string", description: "마무리 글" },
     hashtags: { type: "array", items: { type: "string" }, description: "# 없이 단어만" },
+    privacyFlags: {
+      type: "array",
+      description: "발행 전에 블로그 주인이 확인해야 할 개인정보. 없으면 빈 배열",
+      items: {
+        type: "object",
+        properties: {
+          kind: { type: "string", enum: ["사람 이름", "학교·반", "상세 주소", "전화번호", "차량 번호", "기타"] },
+          text: { type: "string", description: "글에 쓴 그대로의 말, 또는 사진에 보이는 글자" },
+          photo: { type: "integer", description: "사진에서 본 것이면 사진 번호, 글에서 찾은 것이면 0" },
+        },
+        required: ["kind", "text", "photo"],
+        additionalProperties: false,
+      },
+    },
   },
-  required: ["title", "titleOptions", "intro", "sections", "outro", "hashtags"],
+  required: ["title", "titleOptions", "intro", "sections", "outro", "hashtags", "privacyFlags"],
   additionalProperties: false,
 };
 
@@ -211,6 +225,13 @@ function schemaFor(social, notice) {
 const TITLE_GUIDE = `
 
 제목은 title 말고도 titleOptions에 후보 2개를 더 씁니다. 세 제목은 분위기와 강조점이 서로 달라야 합니다. 후보 하나는 사람들이 네이버에서 검색할 말을 앞에 둔 제목으로 씁니다. 지역명, 가게·도장 이름은 블로그 소개나 메모, 사진 속 글자로 알 수 있을 때만 넣고 지어내지 않습니다.`;
+
+const PRIVACY_GUIDE = `
+
+글을 다 쓴 뒤 privacyFlags에 블로그 주인이 발행 전에 확인해야 할 것을 적습니다. 글을 고치는 것이 아니라 알려 주기만 합니다.
+- 글(제목, 본문, 공지문, 인스타그램·쇼츠 글 포함)에 들어간 실제 개인의 이름(아이, 학생, 학부모, 손님. 성 없이 이름만 썼어도 해당), 학교와 학년·반, 집 주소, 개인 전화번호. text는 글에 쓴 그대로 옮기고 photo는 0입니다.
+- 사진에 또렷이 읽히는 이름표, 명찰, 띠나 옷에 적힌 이름, 차량 번호판, 전화번호. text는 보이는 글자를, photo는 사진 번호를 씁니다. 동영상 장면도 같습니다.
+블로그 주인 본인, 직함만 쓴 호칭(관장님, 사범님, 사장님 등), 가게·도장 이름, 가게 주소와 대표 전화, 널리 알려진 인물과 지명은 적지 않습니다. 해당하는 것이 없으면 빈 배열입니다. 확실하지 않은 글자를 짐작해서 적지 않습니다.`;
 
 const NOTICE_GUIDE = `
 
@@ -344,7 +365,7 @@ ${samples.length ? "말투와 분량: 블로그 주인이 직접 쓴 예시 글�
       config.naverTemplate?.trim()
         ? "\n\n글 맨 아래에는 블로그 주인이 네이버에 저장해 둔 고정 템플릿(가게·도장 소개, 시간표, 지도, 톡톡·유튜브·인스타그램 안내 등)이 자동으로 붙습니다. 그런 고정 안내는 마무리 글에 쓰지 마세요."
         : ""
-    }${TITLE_GUIDE}${social ? socialGuide(config) : ""}${notice ? NOTICE_GUIDE : ""}${historyGuide(history)}${standingRequests(config)}${revise ? revision(revise) : ""}`,
+    }${TITLE_GUIDE}${PRIVACY_GUIDE}${social ? socialGuide(config) : ""}${notice ? NOTICE_GUIDE : ""}${historyGuide(history)}${standingRequests(config)}${revise ? revision(revise) : ""}`,
   });
 
   const client = new Anthropic({ apiKey: config.apiKey });

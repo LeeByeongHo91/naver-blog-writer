@@ -54,6 +54,36 @@ async function dismissPopups(frame) {
   }
 }
 
+// 프로그램이 눌러야 하는 네이버 글쓰기 화면의 부품. 네이버가 화면을 바꾸면 이 가운데 일부를 못 찾게 된다.
+// must: 없으면 글을 넣을 수 없다. use: 그 내용이 들어가는 글에서만 본다
+const EDITOR_PARTS = [
+  { name: "제목 칸", selector: ".se-documentTitle .se-text-paragraph", must: true },
+  { name: "본문 칸", selector: ".se-component.se-text .se-text-paragraph", must: true },
+  { name: "사진 넣기 버튼", selector: "button.se-image-toolbar-button", must: true },
+  { name: "저장 버튼", selector: "button[class*='save_btn']", must: true },
+  { name: "임시저장 개수", selector: "button[class*='save_count_btn']", must: true },
+  { name: "동영상 넣기 버튼", selector: "button.se-video-toolbar-button", use: "video" },
+  { name: "지도 넣기 버튼", selector: "button.se-map-toolbar-button", use: "place" },
+  { name: "내 템플릿 버튼", selector: "button.se-template-toolbar-button", use: "template" },
+];
+// 시험용: BLOGWRITER_EDITOR_PART 로 없는 부품을 찾게 해서 화면이 바뀐 경우를 흉내 낸다
+if (process.env.BLOGWRITER_EDITOR_PART) EDITOR_PARTS.push({ name: "시험용 부품", selector: process.env.BLOGWRITER_EDITOR_PART, must: true });
+
+// 글을 넣기 전에 부품이 다 있는지 본다. uses: 이번 글에 쓰는 것 (없으면 전부 본다).
+// 돌려주는 값: broken(없으면 글을 못 넣는 것), partly(글은 넣을 수 있지만 그 기능은 안 되는 것)
+export async function checkEditor(frame, uses) {
+  const deadline = Date.now() + 10_000; // 화면이 늦게 뜰 수 있어서 조금 기다린다
+  const broken = [];
+  const partly = [];
+  for (const part of EDITOR_PARTS.filter((p) => p.must || !uses || uses.has(p.use))) {
+    const timeout = Math.max(500, deadline - Date.now());
+    const found = await frame.locator(part.selector).first().waitFor({ state: "attached", timeout }).then(() => true, () => false);
+    if (!found) (part.must || (uses && part.use === "video") ? broken : partly).push(part.name);
+  }
+  if (broken.length) await saveDebug(frame.page(), frame, "editor");
+  return { broken, partly };
+}
+
 const EMOJI = /(\p{Extended_Pictographic}(?:️|‍\p{Extended_Pictographic})*)/u;
 
 // template: 네이버 '내 템플릿' 이름. 있으면 그 템플릿 내용을 글 맨 아래(해시태그 바로 앞)에 넣는다

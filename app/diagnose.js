@@ -57,7 +57,7 @@ function missingParts() {
 }
 
 // 보고서를 파일로 만들고 그 경로를 돌려준다. jobError, updateError: 지금 화면에 떠 있는 오류 (없으면 빈 문자열)
-export function writeReport({ version, config, users, latest, jobError, updateError }) {
+export function writeReport({ version, config, users, latest, jobError, updateError, naverCheck }) {
   const missing = missingParts();
   const log = fs.existsSync(LOG_FILE) ? fs.readFileSync(LOG_FILE, "utf8").trimEnd().split(/\r?\n/).slice(-REPORT_LINES) : ["(기록 없음)"];
   const text = [
@@ -77,6 +77,7 @@ export function writeReport({ version, config, users, latest, jobError, updateEr
     `인스타·쇼츠: ${config.social ? "켬" : "끔"} · 모자이크: ${config.mosaic ? "켬" : "끔"} · AI 목소리: ${config.shortsVoice ? "켬" : "끔"}`,
     ...(jobError ? ["", "[글 만들기 오류]", jobError] : []),
     ...(updateError ? ["", "[업데이트 오류]", updateError] : []),
+    ...(naverCheck ? ["", "[네이버 화면 점검]", naverCheck] : []),
     "",
     `[최근 기록 ${log.length}줄]`,
     ...log,

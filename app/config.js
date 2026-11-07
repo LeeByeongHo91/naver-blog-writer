@@ -26,6 +26,8 @@ export const DEFAULTS = {
   notice: false, // 카카오톡 채널·단체방에 올릴 짧은 공지문도 쓴다
   learnEdits: true, // 글 확인에서 고친 내용을 기억해 다음 글에 반영한다
   warnWon: 20000, // 이 PC의 이번 달 AI 사용료가 이 금액을 넘으면 알려 준다 (0이면 알리지 않는다)
+  restDays: 14, // 마지막 글을 만든 뒤 이만큼 지나면 글 만들기 화면에 알려 준다 (0이면 알리지 않는다)
+  presets: [], // 자주 쓰는 글 틀 [{ name, format, topic, emphasis, memo }]
   blogAbout: "", // 어떤 블로그이고 누가 읽는지. AI가 글의 관점과 독자를 정할 때 쓴다
   topic: "",
   memo: "",

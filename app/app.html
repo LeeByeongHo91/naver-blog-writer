@@ -170,6 +170,21 @@
   .queue-done li { font-size: 14px; }
   .queue-problem { color: var(--red); white-space: pre-line; margin: 0 0 10px; }
   .notice-card textarea { min-height: 150px; }
+  .privacy-box { margin: 10px 0; padding: 12px 14px; border: 1px solid #f2c46b; border-radius: 10px; background: #fff8e1; color: #6b4500; }
+  .privacy-box h3 { font-size: 15px; margin: 0 0 4px; }
+  .privacy-box p { margin: 0 0 6px; font-size: 14px; }
+  .privacy-box ul { margin: 0; padding-left: 20px; }
+  .preset-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+  .preset-row select { flex: 1; min-width: 200px; width: auto; }
+  .calendar { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin: 10px 0; }
+  .calendar .wd { text-align: center; font-size: 13px; color: var(--muted); }
+  .calendar button { min-height: 46px; padding: 4px 2px; font-weight: normal; background: var(--bg); line-height: 1.25; }
+  .calendar button.empty-day { background: none; visibility: hidden; }
+  .calendar button.has { background: var(--green-soft); border-color: var(--green); font-weight: bold; color: #05683a; }
+  .calendar button.today { outline: 2px solid var(--green); outline-offset: -2px; }
+  .calendar button.on { background: var(--green); color: #fff; }
+  .calendar small { display: block; font-size: 11px; }
+  .cal-nav { display: flex; align-items: center; gap: 8px; }
   .error-tools { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
 
   /* 글 확인: 모자이크 고르기, 인스타·쇼츠 글 */
@@ -314,6 +329,7 @@
 <!-- ===================== 글 만들기 ===================== -->
 <section id="tab-write">
   <div id="setupNotice" class="notice error" hidden>설정이 아직 안 되어 있습니다. 위쪽 '설정' 탭에서 API 키, 블로그 아이디, 사진 폴더를 넣고 저장해 주세요.</div>
+  <div id="restNotice" class="notice info" style="margin:0 0 16px" hidden></div>
 
   <div class="card">
     <h2>1. 글 형식</h2>
@@ -356,6 +372,11 @@
 
   <div class="card">
     <h2>4. 이번 글</h2>
+    <div class="preset-row">
+      <select id="presetPick" title="저장해 둔 글 틀의 형식, 주제, 강조할 점, 하고 싶은 이야기를 불러옵니다"></select>
+      <button id="presetSave" class="small">💾 지금 내용을 글 틀로 저장</button>
+      <button id="presetRemove" class="small" hidden>글 틀 지우기</button>
+    </div>
     <label for="topic">주제 <small id="topicHint">(비워 두면 AI가 사진을 보고 정합니다)</small></label>
     <input type="text" id="topic" placeholder="예: 가을 신메뉴 출시 이야기">
     <label for="emphasis">읽는 사람에게 가장 강조하고 싶은 점</label>
@@ -405,6 +426,11 @@
     <h2>✍ 글 확인</h2>
     <p class="hint">AI가 쓴 글입니다. 고칠 곳은 바로 고치세요. 사진 자리는 그대로 들어갑니다.</p>
     <ul id="reviewChecks" class="checks" hidden></ul>
+    <div id="rvPrivacy" class="privacy-box" hidden>
+      <h3>🛡 발행 전 개인정보 점검</h3>
+      <p>아래 내용이 들어 있습니다. 괜찮으면 그대로 두고, 아니면 글을 고쳐 주세요. 사진에 보이는 것은 사진을 바꾸거나 '얼굴 모자이크'를 켜서 그 자리를 눌러 가려 주세요.</p>
+      <ul class="p-list"></ul>
+    </div>
     <label for="rvTitle">제목 <small>(아래 후보를 누르면 바뀝니다)</small></label>
     <input type="text" id="rvTitle">
     <div id="rvTitleOptions" class="title-options"></div>
@@ -451,6 +477,12 @@
     </div>
   </div>
 
+  <div id="donePrivacy" class="privacy-box" hidden>
+    <h3>🛡 발행 전 개인정보 점검</h3>
+    <p>글 확인을 건너뛰어서 아래 내용을 아직 아무도 보지 않았습니다. 발행 전에 네이버에서 꼭 확인해 주세요.</p>
+    <ul class="p-list"></ul>
+  </div>
+
   <div id="noticeCard" class="card notice-card" hidden>
     <h2>📣 카카오톡 공지문</h2>
     <p class="hint">블로그 글을 발행한 뒤 복사해서 카카오톡에 붙여넣으세요. 끝의 주소는 내 블로그 첫 화면입니다.</p>
@@ -488,11 +520,24 @@
 <section id="tab-posts" hidden>
   <div class="card">
     <div class="card-head">
+      <h2>📅 글 달력 <small id="calCount"></small></h2>
+      <div class="cal-nav"><button id="calPrev" class="small" title="지난달">◀</button><b id="calMonth"></b><button id="calNext" class="small" title="다음 달">▶</button></div>
+    </div>
+    <div id="calendar" class="calendar"></div>
+    <p class="hint" style="margin:0">이 프로그램으로 글을 만든 날에 표시됩니다 (임시저장 기준이라 실제 발행일과 다를 수 있습니다). 날짜를 누르면 그날 글만 보입니다.</p>
+    <div id="yearAgo" hidden>
+      <h3 class="sub">🕰 작년 이맘때 만든 글</h3>
+      <ul id="yearAgoList" class="post-list"></ul>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-head">
       <h2>지난 글</h2>
       <button id="openPosts" class="small">폴더 열기</button>
     </div>
     <p class="hint">이 프로그램으로 만든 글입니다 (지금 사용자 것만). 네이버에 넣다가 문제가 생겼을 때 여기서 복사해서 직접 붙여넣을 수 있습니다.</p>
     <p class="usage-line" id="usageDetail" style="margin:0 0 10px"></p>
+    <div id="dayFilter" class="btns" style="margin:0 0 10px" hidden><b id="dayFilterText" style="align-self:center"></b><button id="dayFilterClear" class="small">전체 글 보기</button></div>
     <ul id="postList" class="post-list"></ul>
   </div>
   <div id="postView" class="card" hidden>
@@ -806,6 +851,20 @@ https://www.youtube.com/@..."></textarea>
     <input type="file" id="settingsFile" accept=".json" hidden>
   </div>
 
+  <div class="card">
+    <h2>14. 네이버 화면 점검</h2>
+    <p class="hint">네이버가 글쓰기 화면을 바꾸면 프로그램이 버튼을 찾지 못할 수 있습니다. 글을 넣을 때마다 저절로 확인하고, 이 버튼으로 미리 확인할 수도 있습니다. 네이버 창이 잠깐 열렸다 닫히고, 글은 입력하거나 저장하지 않습니다. 사용료는 없습니다.</p>
+    <button id="naverCheck" class="small">🔎 지금 점검하기</button>
+    <div id="naverCheckResult" class="result wait" hidden></div>
+  </div>
+
+  <div class="card">
+    <h2>15. 글 쉬는 날 알림</h2>
+    <label for="restDays">마지막 글을 만든 뒤 이만큼 지나면 글 만들기 화면에 알려 주기 <small>(일, 0이면 알리지 않음)</small></label>
+    <input type="number" id="restDays" min="0" step="1">
+    <p class="hint" style="margin-top:8px">프로그램을 켰을 때 화면에 보여 줍니다. 프로그램이 꺼져 있으면 알릴 수 없습니다. (바로 저장됨)</p>
+  </div>
+
   </details>
 
   <button class="primary no-wizard" id="save">설정 저장</button>
@@ -878,6 +937,7 @@ function showTab(name) {
   for (const tab of ["write", "posts", "settings"]) $("tab-" + tab).hidden = name !== tab;
   history.replaceState(null, "", name === "write" ? "#" : "#" + name);
   if (name === "posts") loadPosts();
+  if (name === "settings") renderLearned(); // 글을 끝낸 뒤 방금 배운 내용이 보이게
   window.scrollTo(0, 0);
 }
 for (const button of document.querySelectorAll("nav button")) button.addEventListener("click", () => showTab(button.dataset.tab));
@@ -1197,6 +1257,7 @@ async function watchJob() {
   $("reviewCard").hidden = job.step !== "review";
   renderSocial(job.step === "done" ? job.result?.social : null);
   fillNotice($("noticeCard"), job.step === "done" ? job.result?.notice : "");
+  fillPrivacy($("donePrivacy"), job.step === "done" ? job.result?.privacy : []);
   if (job.batch.running || batchShown) renderQueue();
   batchShown = job.batch.running;
   if (job.running || job.batch.running) {
@@ -1289,7 +1350,8 @@ async function renderQueue() {
   done.textContent = "";
   for (const post of batch.done) {
     const left = post.failed.length ? ` (직접 넣어야 할 것: ${post.failed.join(", ")})` : "";
-    done.append(Object.assign(document.createElement("li"), { textContent: `✅ ${post.title} · 약 ${post.costWon.toLocaleString()}원${left}` }));
+    const check = post.privacy?.length ? ` ⚠ 발행 전 확인: ${post.privacy.map(privacyLine).join(", ")}` : "";
+    done.append(Object.assign(document.createElement("li"), { textContent: `✅ ${post.title} · 약 ${post.costWon.toLocaleString()}원${left}${check}` }));
   }
 }
 $("queueStart").addEventListener("click", async () => {
@@ -1348,6 +1410,7 @@ function renderReview(job) {
   const { post, checks } = job.draft;
   $("rvTitle").value = post.title;
   renderTitleOptions(post);
+  fillPrivacy($("rvPrivacy"), job.draft.privacy);
   $("rvNoticeBox").hidden = post.notice === undefined;
   $("rvNotice").value = post.notice ?? "";
   $("rvIntro").value = post.intro;
@@ -1395,6 +1458,15 @@ function renderReview(job) {
   }
   $("reviewCard").scrollIntoView({ behavior: "smooth" });
 }
+// 발행 전 개인정보 점검 결과
+const privacyLine = (item) => `${item.kind} '${item.text}' (${item.where})`;
+function fillPrivacy(box, items) {
+  box.hidden = !items?.length;
+  const list = box.querySelector(".p-list");
+  list.textContent = "";
+  for (const item of items ?? []) list.append(Object.assign(document.createElement("li"), { textContent: privacyLine(item) }));
+}
+
 // 제목 후보. 누르면 제목 칸이 그 후보로 바뀌고, 지금 제목과 같은 후보에 표시가 붙는다
 function renderTitleOptions(post) {
   const box = $("rvTitleOptions");
@@ -1456,13 +1528,23 @@ async function sendReview(body) {
 }
 // 고치는 내용을 자동으로 저장한다 (창을 닫거나 PC가 꺼져도 다시 열면 이어서 고칠 수 있게)
 let draftTimer = 0;
+async function saveDraftNow() {
+  const result = await api("/api/review", { action: "save", post: collectDraft(), faces: chosenFaces() });
+  if (result.ok) fillPrivacy($("rvPrivacy"), result.privacy);
+  return result;
+}
 function saveDraftSoon() {
   clearTimeout(draftTimer);
-  draftTimer = setTimeout(() => api("/api/review", { action: "save", post: collectDraft(), faces: chosenFaces() }).catch(() => {}), 1000);
+  draftTimer = setTimeout(() => saveDraftNow().catch(() => {}), 1000);
 }
 $("reviewCard").addEventListener("input", saveDraftSoon);
 $("faceGrid").addEventListener("click", saveDraftSoon, true); // 얼굴 칸은 누른 것을 위로 넘기지 않아서 내려가는 길에 받는다
-$("rvAccept").addEventListener("click", () => sendReview({ action: "accept", post: collectDraft(), faces: chosenFaces() }));
+$("rvAccept").addEventListener("click", async () => {
+  clearTimeout(draftTimer);
+  const { privacy } = await saveDraftNow().catch(() => ({}));
+  if (privacy?.length && !await ask(`개인정보로 보이는 내용 ${privacy.length}곳이 남아 있습니다.\n${privacy.map(privacyLine).join("\n")}\n이대로 네이버에 넣을까요?`)) return;
+  sendReview({ action: "accept", post: collectDraft(), faces: chosenFaces() });
+});
 $("rvRewrite").addEventListener("click", () => sendReview({ action: "rewrite", post: collectDraft(), request: $("rvRequest").value, faces: chosenFaces() }));
 $("rvCancel").addEventListener("click", async () => {
   if (await ask("이 글을 네이버에 넣지 않고 그만둘까요? (고른 사진은 그대로 남습니다. 만든 글은 저장되지 않습니다)")) sendReview({ action: "cancel" });
@@ -1831,32 +1913,112 @@ async function loadUsage() {
   $("usageLine").textContent = `💰 이번 달: 글 ${u.thisMonth.posts}편 · AI 사용료 ${won(u.thisMonth.won)}` + (u.lastMonth.won ? `  (지난달 ${won(u.lastMonth.won)})` : "");
   $("usageLine").classList.toggle("over", Boolean(u.warn));
   if (u.warn) $("usageLine").textContent += `  ⚠ 이 PC 이번 달 합계 ${won(u.warn.spent)}, 정해 둔 금액을 넘었습니다`;
+  notice($("restNotice"), "info", u.rested ? `📅 마지막 글을 만든 지 ${u.rested}일 지났습니다. 오늘 한 편 어떠세요?` : "");
+  $("restNotice").style.margin = "0 0 16px";
   $("usageDetail").textContent = `💰 이번 달 글 ${u.thisMonth.posts}편, ${won(u.thisMonth.won)} · 지난달 글 ${u.lastMonth.posts}편, ${won(u.lastMonth.won)} · 지금까지 글 ${u.total.posts}편, ${won(u.total.won)} (다시 쓰기 포함, 실제 청구 금액은 platform.claude.com 에서 확인)`;
 }
 
 // ---------- 지난 글 ----------
+let allPosts = [];
+let shownDay = ""; // 달력에서 누른 날 (YYYY-M-D)
+let calMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+
+// 글 시각 "2026.11.7 14:05" → Date
+const postDate = (post) => {
+  const [y, m, d] = post.date.split(/[. ]/).map(Number);
+  return new Date(y, m - 1, d);
+};
+const dayKey = (date) => `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`;
+
 async function loadPosts() {
   loadUsage();
-  const posts = await api("/api/posts");
+  allPosts = (await api("/api/posts")).filter((post) => post.date);
+  renderCalendar();
+  renderYearAgo();
+  renderPostList();
+}
+
+function postRow(post, list) {
+  const li = document.createElement("li");
+  li.append(Object.assign(document.createElement("span"), { textContent: post.title }), Object.assign(document.createElement("small"), { className: "hint", textContent: post.date }));
+  li.addEventListener("click", async () => {
+    for (const other of document.querySelectorAll(".post-list li")) other.classList.toggle("on", other === li);
+    const got = await api("/api/post?name=" + encodeURIComponent(post.name));
+    if (!got.ok) return tell(got.message);
+    $("postView").hidden = false;
+    $("postTitle").textContent = post.title;
+    showPostSocial(post.name.replace(/[.]txt$/, ""));
+    $("postText").textContent = got.text;
+    $("postView").scrollIntoView({ behavior: "smooth" });
+  });
+  list.append(li);
+}
+
+function renderPostList() {
   const list = $("postList");
   list.textContent = "";
+  const posts = shownDay ? allPosts.filter((post) => dayKey(postDate(post)) === shownDay) : allPosts;
   if (!posts.length) list.append(Object.assign(document.createElement("li"), { className: "empty", textContent: "아직 만든 글이 없습니다." }));
-  for (const post of posts) {
-    const li = document.createElement("li");
-    li.append(Object.assign(document.createElement("span"), { textContent: post.title }), Object.assign(document.createElement("small"), { className: "hint", textContent: post.date }));
-    li.addEventListener("click", async () => {
-      for (const other of list.children) other.classList.toggle("on", other === li);
-      const got = await api("/api/post?name=" + encodeURIComponent(post.name));
-      if (!got.ok) return tell(got.message);
-      $("postView").hidden = false;
-      $("postTitle").textContent = post.title;
-      showPostSocial(post.name.replace(/[.]txt$/, ""));
-      $("postText").textContent = got.text;
-      $("postView").scrollIntoView({ behavior: "smooth" });
-    });
-    list.append(li);
-  }
+  for (const post of posts) postRow(post, list);
+  $("dayFilter").hidden = !shownDay;
+  if (shownDay) $("dayFilterText").textContent = `${shownDay.replace(/^\d+-/, "").replace("-", "월 ")}일에 만든 글 ${posts.length}편`;
 }
+
+function renderCalendar() {
+  const year = calMonth.getFullYear();
+  const month = calMonth.getMonth();
+  const counts = new Map();
+  for (const post of allPosts) counts.set(dayKey(postDate(post)), (counts.get(dayKey(postDate(post))) ?? 0) + 1);
+  const box = $("calendar");
+  box.textContent = "";
+  for (const name of "일월화수목금토") box.append(Object.assign(document.createElement("div"), { className: "wd", textContent: name }));
+  for (let i = 0; i < calMonth.getDay(); i++) box.append(Object.assign(document.createElement("button"), { className: "empty-day", tabIndex: -1 }));
+  const days = new Date(year, month + 1, 0).getDate();
+  let total = 0;
+  for (let day = 1; day <= days; day++) {
+    const key = dayKey(new Date(year, month, day));
+    const count = counts.get(key) ?? 0;
+    total += count;
+    const cell = Object.assign(document.createElement("button"), { textContent: day, disabled: !count });
+    cell.classList.toggle("has", count > 0);
+    cell.classList.toggle("today", key === dayKey(new Date()));
+    cell.classList.toggle("on", key === shownDay);
+    if (count) {
+      cell.append(Object.assign(document.createElement("small"), { textContent: `${count}편` }));
+      cell.addEventListener("click", () => {
+        shownDay = shownDay === key ? "" : key;
+        renderCalendar();
+        renderPostList();
+      });
+    }
+    box.append(cell);
+  }
+  $("calMonth").textContent = `${year}년 ${month + 1}월`;
+  $("calCount").textContent = `(${total}편)`;
+}
+for (const [id, step] of [["calPrev", -1], ["calNext", 1]]) {
+  $(id).addEventListener("click", () => {
+    calMonth = new Date(calMonth.getFullYear(), calMonth.getMonth() + step, 1);
+    renderCalendar();
+  });
+}
+$("dayFilterClear").addEventListener("click", () => {
+  shownDay = "";
+  renderCalendar();
+  renderPostList();
+});
+
+// 1년 이상 지난 글 가운데 달력에서 오늘 앞뒤 2주 안에 만든 글
+function renderYearAgo() {
+  const today = new Date();
+  const DAY = 86_400_000;
+  const near = (date) => [-1, 0, 1].some((shift) => Math.abs(new Date(today.getFullYear() + shift, date.getMonth(), date.getDate()) - today) <= 14 * DAY);
+  const posts = allPosts.filter((post) => today - postDate(post) > 300 * DAY && near(postDate(post)));
+  $("yearAgo").hidden = !posts.length;
+  $("yearAgoList").textContent = "";
+  for (const post of posts) postRow(post, $("yearAgoList"));
+}
+
 $("copyPost").addEventListener("click", async () => {
   await copyText($("postText").textContent);
   $("copyPost").textContent = "✅ 복사했습니다";
@@ -2454,6 +2616,78 @@ $("warnWon").addEventListener("change", async () => {
   loadUsage();
 });
 
+$("restDays").addEventListener("change", async () => {
+  await api("/api/config", { restDays: Math.max(0, Math.round(Number($("restDays").value)) || 0) });
+  loadUsage();
+});
+
+// ---------- 설정: 네이버 화면 점검 ----------
+$("naverCheck").addEventListener("click", async () => {
+  const box = $("naverCheckResult");
+  const started = await api("/api/naver-check", {});
+  box.hidden = false;
+  if (!started.ok) return Object.assign(box, { className: "result bad", textContent: started.message });
+  $("naverCheck").disabled = true;
+  Object.assign(box, { className: "result wait", textContent: "네이버 글쓰기 화면을 여는 중입니다. 잠시만 기다려 주세요." });
+  const poll = async () => {
+    const state = await api("/api/naver-check");
+    if (state.running) {
+      if (state.logs.length) box.textContent = state.logs.at(-1);
+      return setTimeout(poll, 1000);
+    }
+    $("naverCheck").disabled = false;
+    Object.assign(box, { className: "result " + (state.ok ? "ok" : "bad"), textContent: (state.ok ? "✅ " : "❌ ") + state.message });
+  };
+  poll();
+});
+
+// ---------- 자주 쓰는 글 틀 ----------
+const presets = () => (config.presets ?? []).filter((p) => p?.name);
+function renderPresets(chosen = "") {
+  const pick = $("presetPick");
+  pick.textContent = "";
+  pick.append(new Option(presets().length ? "📌 글 틀 불러오기" : "📌 저장한 글 틀이 없습니다", ""));
+  for (const preset of presets()) pick.append(new Option(String(preset.name), String(preset.name)));
+  pick.value = chosen;
+  $("presetRemove").hidden = !chosen;
+}
+const savePresets = (list) => {
+  config.presets = list;
+  return api("/api/config", { presets: list });
+};
+$("presetPick").addEventListener("change", async () => {
+  const name = $("presetPick").value;
+  $("presetRemove").hidden = !name;
+  const preset = presets().find((p) => p.name === name);
+  if (!preset) return;
+  if (["topic", "emphasis", "postMemo"].some((id) => $(id).value.trim()) && !await ask("지금 적은 주제와 내용을 글 틀의 내용으로 바꿀까요?")) return renderPresets();
+  const radio = document.querySelector(`input[name=format][value="${CSS.escape(String(preset.format))}"]`);
+  if (radio) {
+    radio.checked = true;
+    radio.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+  $("topic").value = String(preset.topic ?? "");
+  $("emphasis").value = String(preset.emphasis ?? "");
+  $("postMemo").value = String(preset.memo ?? "");
+});
+$("presetSave").addEventListener("click", async () => {
+  const [topic, emphasis, memo] = ["topic", "emphasis", "postMemo"].map((id) => $(id).value.trim());
+  if (!topic && !emphasis && !memo) return tell("주제나 강조할 점을 먼저 적어 주세요. 지금 적은 내용과 글 형식이 글 틀로 저장됩니다.");
+  const name = (await askText("글 틀 이름을 적어 주세요. (예: 승급심사 후기, 이달의 메뉴)", $("presetPick").value || topic.slice(0, 30)))?.trim().slice(0, 40);
+  if (!name) return;
+  const others = presets().filter((p) => p.name !== name);
+  if (others.length !== presets().length && !await ask(`'${name}' 글 틀을 지금 내용으로 바꿀까요?`)) return;
+  await savePresets([...others, { name, format: currentFormat(), topic, emphasis, memo }]);
+  renderPresets(name);
+  tell(`'${name}' 글 틀을 저장했습니다. 사진은 저장되지 않습니다.`);
+});
+$("presetRemove").addEventListener("click", async () => {
+  const name = $("presetPick").value;
+  if (!name || !await ask(`'${name}' 글 틀을 지울까요?`)) return;
+  await savePresets(presets().filter((p) => p.name !== name));
+  renderPresets();
+});
+
 // ---------- 설정: 옮기기 ----------
 $("settingsExport").addEventListener("click", async () => {
   const result = await api("/api/settings-export", {});
@@ -2484,6 +2718,8 @@ $("settingsFile").addEventListener("change", async () => {
   $("noticeToo").checked = Boolean(config.notice);
   $("learnOn").checked = config.learnEdits !== false;
   $("warnWon").value = config.warnWon;
+  $("restDays").value = config.restDays;
+  renderPresets();
   renderLearned();
   renderQueue();
   api("/api/stats").then((s) => ($("statsOn").checked = s.enabled));
