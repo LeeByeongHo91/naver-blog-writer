@@ -20,6 +20,7 @@ export const DEFAULTS = {
   photosPerPost: 10,
   order: "name", // name | oldest | newest
   askEachTime: true,
+  hideUsed: false, // 사진 고르기에서 이미 글에 쓴 사진을 감출지 (기본은 흐리게 뒤쪽에 보여 줌)
   reviewFirst: true, // AI가 쓴 글을 네이버에 넣기 전에 화면에서 먼저 보고 고친다
   social: true, // 인스타그램 사진·글과 쇼츠 영상도 같이 만든다
   mosaic: false, // 사진 속 얼굴을 찾아 모자이크한다 (블로그·인스타·쇼츠 모두)

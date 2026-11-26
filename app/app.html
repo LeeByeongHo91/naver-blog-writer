@@ -352,7 +352,7 @@
     <p class="hint">글에 넣을 사진을 누르세요. 누른 순서대로 번호가 붙고, 다시 누르면 빠집니다. 순서는 아래 3번에서 바꿀 수 있습니다.<br>PC에 있는 사진은 이 칸에 <b>끌어다 놓거나</b> 'PC에서 사진 추가'로 넣을 수 있습니다 (사진 폴더에 복사됩니다).</p>
     <div class="toolbar">
       <select id="subfolder" hidden></select>
-      <label class="check"><input type="checkbox" id="showUsed"> 이미 글에 쓴 사진도 보기</label>
+      <label class="check" title="한 번 글에 쓴 사진은 흐리게 뒤쪽에 보입니다. 켜면 목록에서 감춥니다"><input type="checkbox" id="hideUsed"> 이미 쓴 사진 숨기기</label>
       <span class="spacer"></span>
       <button id="checkPhotos" title="흔들리거나 초점이 안 맞은 사진, 거의 똑같은 사진을 찾아 표시합니다">🔍 사진 점검</button>
       <button id="addFiles">📂 PC에서 사진 추가</button>
@@ -1012,7 +1012,11 @@ async function loadPhotos(sub) {
   renderOrder();
 }
 
-const visibleItems = () => photoData.items.filter((item) => $("showUsed").checked || !item.used || selected.some((s) => s.path === item.path));
+// 이미 쓴 사진도 흐리게 보여 주되 새 사진 뒤에 둔다 (같은 사진을 다시 쓰는 사람이 사진이 사라졌다고 헷갈리지 않게). 숨기기를 켜면 감춘다
+const visibleItems = () => {
+  const shown = photoData.items.filter((item) => !$("hideUsed").checked || !item.used || selected.some((s) => s.path === item.path));
+  return [...shown.filter((item) => !item.used), ...shown.filter((item) => item.used)];
+};
 
 function renderGrid() {
   const grid = $("grid");
@@ -1022,7 +1026,7 @@ function renderGrid() {
   if (!items.length) {
     const empty = document.createElement("div");
     empty.className = "empty";
-    empty.textContent = photoData.items.length ? "새로 올린 사진이 없습니다. 이미 쓴 사진으로 다시 쓰려면 '이미 글에 쓴 사진도 보기'를 켜세요." : "이 폴더에 사진이나 동영상이 없습니다. 구글 드라이브 폴더에 추가한 뒤 '새로고침'을 누르세요.";
+    empty.textContent = photoData.items.length ? "새로 올린 사진이 없습니다. 이미 쓴 사진으로 다시 쓰려면 '이미 쓴 사진 숨기기'를 끄세요." : "이 폴더에 사진이나 동영상이 없습니다. 구글 드라이브 폴더에 추가한 뒤 '새로고침'을 누르세요.";
     grid.append(empty);
   }
   $("nestedHint").hidden = !photoData.nested;
@@ -1165,7 +1169,12 @@ function renderOrder() {
   });
 }
 
-$("showUsed").addEventListener("change", renderGrid);
+// 숨기기를 켰는지는 사용자마다 기억한다
+$("hideUsed").addEventListener("change", () => {
+  config.hideUsed = $("hideUsed").checked;
+  api("/api/config", { hideUsed: config.hideUsed });
+  renderGrid();
+});
 $("reload").addEventListener("click", () => loadPhotos(photoData.folder));
 $("clearPick").addEventListener("click", async () => {
   if (selected.some((s) => s.note.trim()) && !await ask("적어 둔 사진 메모도 함께 지워집니다. 모두 뺄까요?")) return;
@@ -2731,6 +2740,7 @@ $("settingsFile").addEventListener("change", async () => {
   renderUsers();
   fillSettings(data.driveGuess);
   $("reviewFirst").checked = config.reviewFirst !== false;
+  $("hideUsed").checked = Boolean(config.hideUsed);
   $("socialToo").checked = config.social !== false;
   $("mosaicFaces").checked = Boolean(config.mosaic);
   $("noticeToo").checked = Boolean(config.notice);
