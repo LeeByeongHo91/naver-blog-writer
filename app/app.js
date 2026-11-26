@@ -6,7 +6,8 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { exec, spawn } from "node:child_process";
+import { exec, execFile, spawn } from "node:child_process";
+import { promisify } from "node:util";
 import sharp from "sharp";
 import { chromium } from "playwright-core";
 import { loadConfig, saveConfig, listMedia, listSubfolders, loadUsed, markUsed, isVideo, DATA_DIR, userPaths, loadUsers, currentUser, addUser, switchUser, renameUser, removeUser, recordUsage, usageSummary, monthWon, listPosts, readPost, recentSummaries, savePostData, readPostData, IMAGE_EXTS, VIDEO_EXTS } from "./config.js";
@@ -102,7 +103,9 @@ function photoList(sub) {
     return { ok: true, mode: "subfolder", folders, folder: current.path, folderName: current.name, items: files.map(item), preselect: files.slice(0, config.photosPerPost) };
   }
   const files = sortFiles(listMedia(config.photoFolder), config.order);
-  return { ok: true, mode: "batch", items: files.map(item), preselect: files.filter((f) => !used.has(f) && !queued.has(f)).slice(0, config.photosPerPost) };
+  // 한 폴더 방식은 폴더 바로 안의 사진만 보여 준다. 하위 폴더에 넣은 사진이 안 보인다고 헷갈리지 않게 개수를 알려 준다
+  const nested = listSubfolders(config.photoFolder).reduce((sum, f) => { try { return sum + listMedia(f).length; } catch { return sum; } }, 0);
+  return { ok: true, mode: "batch", nested, items: files.map(item), preselect: files.filter((f) => !used.has(f) && !queued.has(f)).slice(0, config.photosPerPost) };
 }
 
 // 사진 폴더 밖의 파일은 보여 주지 않는다
@@ -655,8 +658,7 @@ async function upload(req, name, sub) {
   const base = path.basename(String(name ?? "")).replace(/[<>:"/\\|?*\x00-\x1f]/g, "_");
   const ext = path.extname(base).toLowerCase();
   if (!base || !(IMAGE_EXTS.has(ext) || VIDEO_EXTS.has(ext))) return { ok: false, message: `${base || "파일"}: 사진이나 동영상 파일만 넣을 수 있습니다.` };
-  let target = path.join(folder, base);
-  for (let n = 1; fs.existsSync(target); n++) target = path.join(folder, `${path.basename(base, ext)} (${n})${ext}`);
+  const target = freeName(folder, base);
   await new Promise((resolve, reject) => {
     const out = fs.createWriteStream(target);
     req.pipe(out);
@@ -665,6 +667,77 @@ async function upload(req, name, sub) {
     req.on("error", reject);
   });
   return { ok: true, path: target };
+}
+
+// 같은 이름이 있으면 "이름 (1).jpg"처럼 비어 있는 이름을 돌려준다
+function freeName(folder, base) {
+  const ext = path.extname(base);
+  let target = path.join(folder, base);
+  for (let n = 1; fs.existsSync(target); n++) target = path.join(folder, `${path.basename(base, ext)} (${n})${ext}`);
+  return target;
+}
+
+// 'PC에서 사진 추가'를 누르면 윈도우 파일 고르기 창을 사진 폴더(하위 폴더 방식이면 지금 보고 있는 폴더)에서 바로 연다.
+// 프로그램 창(브라우저)의 파일 고르기 창은 시작 폴더를 정할 수 없어서, 마지막에 열었던 곳에서 열려 구글 드라이브를 다시 찾아 들어가야 했다.
+// 사진 고르기에 이미 보이는 파일은 복사하지 않고 그대로 골라 두고, 그 밖의 파일(PC나 하위 폴더의 사진)만 사진 폴더에 복사한다
+const PICK_SCRIPT = `
+Add-Type -AssemblyName System.Windows.Forms
+$d = New-Object System.Windows.Forms.OpenFileDialog
+$d.Title = '글에 넣을 사진 고르기'
+$d.InitialDirectory = $env:BW_PICK_DIR
+$d.Multiselect = $true
+$d.Filter = '사진과 동영상|' + $env:BW_PICK_EXTS + '|모든 파일|*.*'
+$owner = New-Object System.Windows.Forms.Form
+$owner.TopMost = $true
+$owner.ShowInTaskbar = $false
+$names = @()
+if ($d.ShowDialog($owner) -eq 'OK') { $names = @($d.FileNames) }
+[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((ConvertTo-Json -InputObject $names -Compress)))`;
+const runFile = promisify(execFile);
+let picking = false;
+
+async function pickFiles(sub) {
+  const config = loadConfig();
+  const root = config.photoFolder;
+  if (!root || !fs.existsSync(root)) return { ok: false, message: "사진 폴더를 찾을 수 없습니다. 설정에서 사진 폴더를 먼저 골라 주세요." };
+  if (picking) return { ok: false, message: "사진 고르기 창이 이미 열려 있습니다. 작업 표시줄에서 그 창을 찾아 주세요." };
+  const folder = config.mode === "subfolder" && sub && isInside(root, sub) && fs.existsSync(sub) ? sub : root;
+  const exts = [...IMAGE_EXTS, ...VIDEO_EXTS].map((e) => "*" + e).join(";");
+  let chosen;
+  picking = true;
+  try {
+    const { stdout } = await runFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-STA", "-Command", PICK_SCRIPT], {
+      env: { ...process.env, BW_PICK_DIR: folder, BW_PICK_EXTS: exts },
+      windowsHide: true,
+      timeout: 60 * 60 * 1000,
+    });
+    const list = JSON.parse(Buffer.from(stdout.trim(), "base64").toString("utf8") || "[]");
+    chosen = (Array.isArray(list) ? list : [list]).filter((f) => typeof f === "string" && f);
+  } catch (error) {
+    console.error("윈도우 파일 고르기 창을 열지 못했습니다:", error.killed ? "시간 초과" : `코드 ${error.code}`, String(error.stderr ?? "").trim().slice(0, 300));
+    return { ok: false, fallback: true };
+  } finally {
+    picking = false;
+  }
+  const same = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
+  const paths = [];
+  const failed = [];
+  for (const file of chosen) {
+    const base = path.basename(file);
+    const ext = path.extname(base).toLowerCase();
+    if (!IMAGE_EXTS.has(ext) && !VIDEO_EXTS.has(ext)) failed.push(`${base}: 사진이나 동영상 파일만 넣을 수 있습니다.`);
+    else if (same(path.dirname(file), folder)) paths.push(file);
+    else {
+      try {
+        const target = freeName(folder, base.replace(/[<>:"/\\|?*\x00-\x1f]/g, "_"));
+        fs.copyFileSync(file, target);
+        paths.push(target);
+      } catch (error) {
+        failed.push(`${base}: 사진 폴더에 복사하지 못했습니다 (${error.code ?? error.message})`);
+      }
+    }
+  }
+  return { ok: true, paths, failed };
 }
 
 // 폴더 고르기 첫 화면에 보여 줄 이 PC의 사진 폴더와 바탕 화면 (있는 것만)
@@ -1232,6 +1305,8 @@ const server = http.createServer(async (req, res) => {
       res.end(preview);
     } else if (req.method === "POST" && url.pathname === "/api/upload") {
       json(await upload(req, url.searchParams.get("name"), url.searchParams.get("sub")));
+    } else if (req.method === "POST" && url.pathname === "/api/pick-files") {
+      json(await pickFiles((await readBody(req)).sub));
     } else if (req.method === "GET" && url.pathname === "/api/update") {
       json({ ...updateInfo(), current: VERSION, ...update });
     } else if (req.method === "POST" && url.pathname === "/api/update/check") {

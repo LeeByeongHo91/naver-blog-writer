@@ -361,6 +361,7 @@
       <button id="reload">새로고침</button>
     </div>
     <p id="photoCheckMsg" class="hint" hidden></p>
+    <p id="nestedHint" class="hint" hidden></p>
     <div id="grid" class="grid"></div>
   </div>
 
@@ -1024,6 +1025,8 @@ function renderGrid() {
     empty.textContent = photoData.items.length ? "새로 올린 사진이 없습니다. 이미 쓴 사진으로 다시 쓰려면 '이미 글에 쓴 사진도 보기'를 켜세요." : "이 폴더에 사진이나 동영상이 없습니다. 구글 드라이브 폴더에 추가한 뒤 '새로고침'을 누르세요.";
     grid.append(empty);
   }
+  $("nestedHint").hidden = !photoData.nested;
+  $("nestedHint").textContent = `사진 폴더 안의 하위 폴더에 사진·동영상 ${photoData.nested}개가 더 있는데, 여기에는 사진 폴더 바로 안의 사진만 보입니다. 하위 폴더 사진을 쓰려면 '📂 PC에서 사진 추가'로 고르거나 사진 폴더 바로 안으로 옮겨 주세요.`;
   for (const item of items) {
     const tile = document.createElement("div");
     tile.className = "tile" + (order.has(item.path) ? " selected" : "") + (item.used ? " used" : "");
@@ -1762,6 +1765,11 @@ async function uploadFiles(files) {
     if (res.ok) added.push(res.path);
     else failed.push(res.message);
   }
+  await selectAdded(sub, added, failed);
+}
+
+// 넣은 사진을 목록에 다시 읽어 와서 바로 골라 둔다
+async function selectAdded(sub, added, failed) {
   await loadPhotos(sub || undefined);
   // 새로 넣은 사진은 바로 골라 둔다
   for (const p of added) {
@@ -1770,9 +1778,19 @@ async function uploadFiles(files) {
   }
   renderGrid();
   renderOrder();
-  notice($("runNotice"), failed.length ? "error" : "info", failed.length ? failed.join("\n") : added.length ? `사진 ${added.length}개를 사진 폴더에 넣고 골라 두었습니다.` : "");
+  notice($("runNotice"), failed.length ? "error" : "info", failed.length ? failed.join("\n") : added.length ? `사진 ${added.length}개를 골라 두었습니다.` : "");
 }
-$("addFiles").addEventListener("click", () => $("fileInput").click());
+// 윈도우 파일 고르기 창을 사진 폴더에서 바로 연다. 창을 못 열면 예전처럼 브라우저의 파일 고르기를 쓴다
+$("addFiles").addEventListener("click", async () => {
+  if (!config.photoFolder) return notice($("runNotice"), "error", "설정에서 사진 폴더를 먼저 골라 주세요. 넣은 사진은 그 폴더에 복사됩니다.");
+  const sub = photoData.mode === "subfolder" ? photoData.folder ?? "" : "";
+  $("addFiles").disabled = true;
+  const result = await api("/api/pick-files", { sub }).catch(() => ({ ok: false, fallback: true }));
+  $("addFiles").disabled = false;
+  if (result.fallback) return $("fileInput").click();
+  if (!result.ok) return notice($("runNotice"), "error", result.message);
+  if (result.paths.length || result.failed.length) await selectAdded(sub, result.paths, result.failed);
+});
 $("fileInput").addEventListener("change", async () => {
   await uploadFiles($("fileInput").files);
   $("fileInput").value = "";
